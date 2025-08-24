@@ -19,6 +19,8 @@ class MessageController:
         self.max_message_length = max_message_length
         self.question_frequency = question_frequency  # Каждые N сообщений
         self.question_counter = 0
+        self.conversation_topics = []  # История тем разговора
+        self.last_questions = []  # Последние заданные вопросы
         
         # Паттерны для разбиения текста
         self.split_patterns = [
@@ -47,67 +49,149 @@ class MessageController:
             'delays_ms': List[int]  # Задержки между частями в мс
         }
         """
-        # Проверяем есть ли уже вопросы в оригинальном контенте
-        original_has_question = '?' in content
+        # Извлекаем темы из текущего сообщения
+        current_topics = await self._extract_conversation_topics(content)
+        for topic in current_topics:
+            if topic not in self.conversation_topics:
+                self.conversation_topics.append(topic)
         
-        # Проверяем нужен ли дополнительный вопрос
+        # Сохраняем только последние 10 тем
+        if len(self.conversation_topics) > 10:
+            self.conversation_topics = self.conversation_topics[-10:]
+        
+        # Проверяем есть ли уже вопросы в оригинальном контенте
+        has_existing_question = '?' in content
+        
+        # Определяем нужно ли добавить вопрос
         should_add_question = await self._should_add_question(context)
         
-        # Добавляем вопрос если нужно И если его еще нет
-        if should_add_question and not original_has_question:
-            content = await self._add_contextual_question(content, context)
-            print(f"🔍 MessageController: Добавлен вопрос (counter: {self.question_counter})")
-        elif original_has_question:
-            print(f"🔍 MessageController: Вопрос уже есть в ответе GPT-4")
+        final_content = content
+        final_has_question = has_existing_question
+        
+        # Добавляем вопрос только если:
+        # 1. Пришло время для вопроса по счетчику
+        # 2. В оригинальном тексте нет вопроса
+        if should_add_question and not has_existing_question:
+            contextual_question = await self._generate_contextual_question(context)
+            final_content = f"{content} {contextual_question}"
+            final_has_question = True
+            print(f"🔍 MessageController: Добавлен вопрос: {contextual_question}")
+        elif has_existing_question:
+            print(f"🔍 MessageController: Вопрос уже есть в тексте")
         else:
-            print(f"🔍 MessageController: Вопрос не добавлен (counter: {self.question_counter})")
+            print(f"🔍 MessageController: Вопрос НЕ добавлен (счетчик: {self.question_counter})")
         
-        # Разбиваем на части если сообщение длинное
-        parts = await self._split_long_message(content)
+        # Разбиваем сообщение на части если оно слишком длинное
+        if len(final_content) > self.max_message_length:
+            print(f"🔄 Разбиваем сообщение длиной {len(final_content)} символов")
+            parts = await self._split_long_message(final_content)
+            print(f"🔄 Результат: {len(parts)} частей")
+        else:
+            parts = [final_content]
         
-        # Добавляем эмоциональные паузы
-        delays = await self._calculate_delays(parts)
-        
-        # Проверяем есть ли вопросы в финальном результате
-        has_question = any('?' in part for part in parts)
+        # Рассчитываем задержки
+        delays = await self._calculate_delays(parts, context)
         
         return {
             'parts': parts,
-            'has_question': has_question,
+            'has_question': final_has_question,
             'delays_ms': delays
         }
     
+    async def _extract_conversation_topics(self, content: str) -> List[str]:
+        """Извлечь темы из контента сообщения"""
+        topics = []
+        content_lower = content.lower()
+        
+        # Определяем основные темы
+        topic_keywords = {
+            'работа': ['работа', 'профессия', 'карьера', 'коллеги', 'проект', 'офис', 'начальник'],
+            'семья': ['семья', 'родители', 'мама', 'папа', 'жена', 'муж', 'дети', 'сын', 'дочь'],
+            'хобби': ['хобби', 'увлечения', 'спорт', 'музыка', 'игры', 'чтение', 'фотография'],
+            'здоровье': ['здоровье', 'самочувствие', 'болезнь', 'врач', 'лечение', 'спорт'],
+            'путешествия': ['путешествие', 'отпуск', 'страна', 'город', 'поездка', 'отдых'],
+            'образование': ['учеба', 'университет', 'курсы', 'изучение', 'знания', 'экзамен'],
+            'отношения': ['друзья', 'отношения', 'любовь', 'свидание', 'знакомство'],
+            'планы': ['планы', 'цели', 'мечты', 'будущее', 'хочу', 'собираюсь']
+        }
+        
+        for topic, keywords in topic_keywords.items():
+            if any(keyword in content_lower for keyword in keywords):
+                topics.append(topic)
+        
+        return topics
+
     async def _should_add_question(self, context: Dict[str, Any]) -> bool:
-        """Определить, нужно ли добавить вопрос"""
+        """Определить, нужно ли добавить вопрос с учетом частоты"""
         self.question_counter += 1
         
-        # Строгий контроль частоты - основное правило
+        print(f"🔍 MessageController: Счетчик вопросов: {self.question_counter}/{self.question_frequency}")
+        
+        # СТРОГОЕ ПРАВИЛО: только каждые N сообщений
         if self.question_counter >= self.question_frequency:
             self.question_counter = 0
-            
-            # Дополнительные условия влияют только когда пришло время для вопроса
-            user_mood = context.get('recent_mood', 'neutral')
-            relationship_stage = context.get('relationship_stage', 'introduction')
-            
-            # На ранних стадиях всегда задаем вопрос когда пришло время
-            if relationship_stage in ['introduction', 'getting_acquainted']:
-                return True
-            
-            # При плохом настроении тоже задаем вопрос
-            if user_mood in ['negative', 'stressed', 'tired']:
-                return True
-            
-            # При высокой активности иногда пропускаем
-            if context.get('activity_level') == 'very_active':
-                return random.random() < 0.7
-            
+            print(f"🔍 MessageController: ВРЕМЯ для вопроса (сброс счетчика)")
             return True
         
-        # Между основными вопросами очень редко добавляем спонтанные
-        if random.random() < 0.1:  # Только 10% шанс
-            return True
-            
+        print(f"🔍 MessageController: НЕ время для вопроса (счетчик: {self.question_counter})")
         return False
+
+    async def _generate_contextual_question(self, context: Dict[str, Any]) -> str:
+        """Сгенерировать вопрос на основе тем предыдущих разговоров"""
+        recent_topics = self.conversation_topics[-3:] if self.conversation_topics else []
+        user_mood = context.get('recent_mood', 'neutral')
+        
+        # Избегаем повторения последних вопросов
+        available_questions = []
+        
+        # Вопросы на основе недавних тем
+        if 'работа' in recent_topics:
+            questions = [
+                "Как дела на работе?",
+                "Есть ли интересные проекты сейчас?",
+                "Как складываются отношения с коллегами?"
+            ]
+            available_questions.extend([q for q in questions if q not in self.last_questions])
+        
+        if 'семья' in recent_topics:
+            questions = [
+                "Как дела у близких?",
+                "Что нового в семье?",
+                "Как проводите время вместе?"
+            ]
+            available_questions.extend([q for q in questions if q not in self.last_questions])
+        
+        if 'хобби' in recent_topics:
+            questions = [
+                "Чем занимаешься в свободное время?",
+                "Есть ли новые увлечения?",
+                "Удается ли находить время для хобби?"
+            ]
+            available_questions.extend([q for q in questions if q not in self.last_questions])
+        
+        # Общие вопросы если нет специфических тем
+        if not available_questions:
+            general_questions = [
+                "Как прошел день?",
+                "Что планируешь на выходные?",
+                "Есть ли что-то интересное, чем хочешь поделиться?",
+                "Как настроение сегодня?",
+                "Что тебя больше всего интересует в последнее время?"
+            ]
+            available_questions.extend([q for q in general_questions if q not in self.last_questions])
+        
+        # Выбираем случайный вопрос
+        if available_questions:
+            selected_question = random.choice(available_questions)
+            
+            # Сохраняем вопрос в историю (не более 5 последних)
+            self.last_questions.append(selected_question)
+            if len(self.last_questions) > 5:
+                self.last_questions.pop(0)
+            
+            return selected_question
+        
+        return "Как дела?"
     
     async def _add_contextual_question(self, content: str, context: Dict[str, Any]) -> str:
         """Добавить контекстуальный вопрос к сообщению"""
@@ -333,7 +417,7 @@ class MessageController:
         
         return 0  # Не найдено хорошее место для разбиения
     
-    async def _calculate_delays(self, parts: List[str]) -> List[int]:
+    async def _calculate_delays(self, parts: List[str], context: Dict[str, Any]) -> List[int]:
         """Вычислить задержки между частями сообщения"""
         delays = []
         

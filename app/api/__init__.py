@@ -6,5 +6,5 @@ from app.api.main import app
 __all__ = ['app']
 
 def create_app():
-    """Create Flask application instance"""
+    
     return app 

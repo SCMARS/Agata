@@ -18,12 +18,12 @@ from ..utils.behavioral_analyzer import BehavioralAnalyzer
 from ..utils.prompt_composer import PromptComposer
 
 class PipelineState(TypedDict):
-    """State object for the pipeline - полноценный TypedDict для LangGraph"""
+    
     user_id: str
     messages: List[Dict[str, Any]]
     meta_time: Optional[datetime]
     
-    # Pipeline state
+    
     normalized_input: str
     memory_context: str
     day_prompt: str
@@ -49,7 +49,7 @@ class AgathaPipeline:
         self.prompt_loader = PromptLoader()
         self.time_utils = TimeUtils()
         self.memory_instances: Dict[str, HybridMemory] = {}
-        # MessageController теперь создается для каждого пользователя отдельно
+        
         self.message_controllers: Dict[str, MessageController] = {}
         self.behavioral_analyzer = BehavioralAnalyzer()
         self.prompt_composer = PromptComposer()
@@ -64,7 +64,7 @@ class AgathaPipeline:
         else:
             self.llm = None  
         
-        # Build the graph - ПРАВИЛЬНЫЙ API
+        
         self.graph = self._build_graph()
     
     def _build_graph(self):
@@ -81,7 +81,7 @@ class AgathaPipeline:
         workflow.add_node("postprocess", self._postprocess)
         workflow.add_node("persist", self._persist)
         
-        # Add edges with new API
+        
         workflow.add_edge(START, "ingest_input")
         workflow.add_edge("ingest_input", "short_memory")
         workflow.add_edge("short_memory", "day_policy")
@@ -123,29 +123,27 @@ class AgathaPipeline:
         else:
             state["meta_time"] = datetime.utcnow()
         
-        # Run the pipeline через LangGraph
+        
         result = await self.graph.ainvoke(state)
         return result["processed_response"]
     
     async def _fallback_pipeline(self, state: PipelineState) -> Dict[str, Any]:
-        """Fallback pipeline без LangGraph - НЕ ИСПОЛЬЗУЕТСЯ!"""
-        # Этот метод больше не используется - только для совместимости
-        # Всегда используем полный LangGraph pipeline
+        
         raise Exception("Fallback pipeline не должен использоваться! Используйте LangGraph.")
     
     async def _ingest_input(self, state: PipelineState) -> PipelineState:
-        """Node 1: Normalize input and extract metadata"""
+        
         if not state["messages"]:
             state["normalized_input"] = ""
             return state
         
-        # Get the last user message
+        
         user_messages = [msg for msg in state["messages"] if msg.get('role') == 'user']
         if user_messages:
             last_message = user_messages[-1]
             state["normalized_input"] = last_message.get('content', '').strip()
         
-        # Calculate day number (simplified)
+       
         state["day_number"] = 1  # TODO: Calculate from user profile
         
         return state
@@ -304,20 +302,138 @@ class AgathaPipeline:
     async def _llm_call(self, state: PipelineState) -> PipelineState:
         """Node 6: Call LLM and get response"""
         if self.llm is None:
-            # Fallback response for testing с реалистичными ответами
+            # Улучшенный mock LLM с использованием контекста памяти
             user_input = state["normalized_input"]
             strategy = state["current_strategy"]
             day = state["day_number"]
+            memory_context = state.get("memory_context", "")
             
-            mock_responses = {
-                "caring": f"Привет! Я рада тебя видеть 😊 Ты написал: '{user_input}'. Как у тебя дела? Я хочу поддержать тебя!",
-                "mysterious": f"Интересно... '{user_input}' 🤔 Есть что-то особенное в том, что ты сказал. Что скрывается за этими словами?",
-                "playful": f"Ой-ой! '{user_input}' 😄 Ты такой забавный! Хочешь поиграть в словесные игры?",
-                "reserved": f"Понимаю. Ты сказал: '{user_input}'. Это интересная точка зрения."
-            }
+            # Проверяем есть ли в памяти информация о пользователе
+            has_name = any(word in memory_context.lower() for word in ['зовут', 'имя', 'меня'])
+            has_profession = any(word in memory_context.lower() for word in ['программист', 'разработчик', 'team lead', 'работаю'])
+            has_location = any(word in memory_context.lower() for word in ['киев', 'харьков', 'одесса', 'львов'])
             
-            base_response = mock_responses.get(strategy, f"Привет! День {day}, стратегия {strategy}. Ты сказал: '{user_input}'")
-            state["llm_response"] = base_response
+            # Извлекаем имя из контекста памяти
+            user_name = ""
+            if "зовут" in memory_context.lower():
+                words = memory_context.split()
+                for i, word in enumerate(words):
+                    if word.lower() in ['зовут', 'имя'] and i + 1 < len(words):
+                        user_name = words[i + 1].replace(',', '').replace('.', '')
+                        break
+            
+            # Умные ответы в зависимости от контекста
+            memory_questions = ["помнишь", "помнить", "зовут", "имя", "работа", "семья", "живу", "город", "увлечения", "хобби"]
+            is_memory_question = any(word in user_input.lower() for word in memory_questions)
+            
+            if is_memory_question:
+                # Вопросы о памяти - используем контекст
+                if memory_context and len(memory_context) > 50:
+                    # Извлекаем информацию из контекста памяти
+                    context_lower = memory_context.lower()
+                    
+                    # Поиск имени
+                    name_match = ""
+                    if "зовут" in context_lower:
+                        words = memory_context.split()
+                        for i, word in enumerate(words):
+                            if word.lower() in ['зовут', 'имя'] and i + 1 < len(words):
+                                name_match = words[i + 1].replace(',', '').replace('.', '').replace(':', '')
+                                break
+                    
+                    # Поиск профессии
+                    profession_match = ""
+                    profession_words = ["программист", "разработчик", "lead", "senior", "architect", "designer", "менеджер"]
+                    for word in profession_words:
+                        if word in context_lower:
+                            profession_match = word
+                            break
+                    
+                    # Поиск города
+                    city_match = ""
+                    cities = ["киев", "львов", "харьков", "одесса", "днепр"]
+                    for city in cities:
+                        if city in context_lower:
+                            city_match = city.capitalize()
+                            break
+                    
+                    # Поиск компании
+                    company_match = ""
+                    if "softserve" in context_lower:
+                        company_match = "SoftServe"
+                    elif "компании" in context_lower:
+                        company_match = "IT компании"
+                    
+                    # Поиск семьи
+                    family_info = []
+                    if "жена" in context_lower or "муж" in context_lower:
+                        family_info.append("семья")
+                    if "сын" in context_lower or "дочь" in context_lower:
+                        family_info.append("дети")
+                    
+                    # Поиск увлечений
+                    hobbies = []
+                    hobby_words = ["гитар", "астроном", "фотограф", "спорт", "читать", "игр"]
+                    for hobby in hobby_words:
+                        if hobby in context_lower:
+                            hobbies.append(hobby)
+                    
+                    # Формируем ответ на основе вопроса
+                    if "зовут" in user_input.lower() or "имя" in user_input.lower():
+                        if name_match:
+                            response = f"Конечно помню! Тебя зовут {name_match}."
+                        else:
+                            response = "Хм, напомни мне пожалуйста, как тебя зовут?"
+                    
+                    elif "работа" in user_input.lower() or "работаю" in user_input.lower():
+                        if profession_match and company_match:
+                            response = f"Ты работаешь {profession_match}ом в {company_match}"
+                            if city_match:
+                                response += f" в {city_match}е"
+                            response += "."
+                        elif profession_match:
+                            response = f"Ты работаешь {profession_match}ом."
+                        else:
+                            response = "Расскажи мне о своей работе - я хочу запомнить!"
+                    
+                    elif "семья" in user_input.lower():
+                        if family_info:
+                            response = f"У тебя есть {', '.join(family_info)}."
+                        else:
+                            response = "Расскажи мне о своей семье!"
+                    
+                    elif "город" in user_input.lower() or "живу" in user_input.lower():
+                        if city_match:
+                            response = f"Ты живешь в {city_match}е."
+                        else:
+                            response = "В каком городе ты живешь?"
+                    
+                    elif "увлечения" in user_input.lower() or "хобби" in user_input.lower():
+                        if hobbies:
+                            response = f"Твои увлечения: {', '.join(hobbies)}."
+                        else:
+                            response = "Какие у тебя увлечения?"
+                    
+                    else:
+                        response = f"Помню! {memory_context.split('|')[1] if '|' in memory_context else memory_context[:100]}..."
+                
+                else:
+                    response = "Хм, напомни мне пожалуйста - мы недавно знакомились?"
+            
+            else:
+                # Обычные ответы с учетом стратегии (БЕЗ автоматических вопросов)
+                mock_responses = {
+                    "caring": f"Привет! Я рада тебя видеть 😊 Ты написал: '{user_input[:50]}...'. Я хочу поддержать тебя.",
+                    "supportive": f"Понимаю твои чувства. Ты сказал: '{user_input[:50]}...'. Я здесь, чтобы помочь тебе.",
+                    "mysterious": f"Интересно... '{user_input[:50]}...' 🤔 Есть что-то особенное в том, что ты сказал.",
+                    "playful": f"Ой-ой! '{user_input[:50]}...' 😄 Ты такой забавный! Люблю такие разговоры.",
+                    "reserved": f"Понимаю. Ты сказал: '{user_input[:50]}...'. Это интересная точка зрения.",
+                    "intellectual": f"Интересные мысли! Ты поделился: '{user_input[:50]}...'. Давай обсудим это глубже."
+                }
+                response = mock_responses.get(strategy, f"Спасибо за сообщение! Стратегия {strategy}.")
+            
+            # ВАЖНО: Mock LLM НЕ добавляет вопросы - это делает MessageController
+            state["llm_response"] = response
         else:
             try:
                 # Реальный API OpenAI

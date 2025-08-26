@@ -23,7 +23,7 @@ class Settings:
     # LLM Configuration
     OPENAI_API_KEY: Optional[str] = os.getenv('OPENAI_API_KEY')
     LLM_MODEL: str = os.getenv('LLM_MODEL', 'gpt-4')
-    MAX_MESSAGE_LENGTH: int = int(os.getenv('MAX_MESSAGE_LENGTH', '2000'))
+    MAX_MESSAGE_LENGTH: int = int(os.getenv('MAX_MESSAGE_LENGTH', '500'))
     
     # LangSmith (optional)
     LANGSMITH_API_KEY: Optional[str] = os.getenv('LANGSMITH_API_KEY')

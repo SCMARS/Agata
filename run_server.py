@@ -12,6 +12,12 @@ sys.path.insert(0, PROJECT_ROOT)
 # Настройка окружения
 os.environ.setdefault('PYTHONPATH', PROJECT_ROOT)
 
+# Явно устанавливаем OpenAI API ключ если он есть в окружении
+if 'OPENAI_API_KEY' in os.environ:
+    print(f"🔑 OpenAI API Key found: {os.environ['OPENAI_API_KEY'][:20]}...")
+else:
+    print("⚠️ No OPENAI_API_KEY in environment")
+
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import logging
@@ -34,9 +40,11 @@ def get_pipeline():
         print("🚀 Initializing FULL LangGraph Pipeline...")
         try:
             from app.graph.pipeline import AgathaPipeline
+            print("🔧 Creating AgathaPipeline instance...")
             _pipeline = AgathaPipeline()
             print("✅ FULL LangGraph Pipeline initialized successfully!")
             print("🎯 All components loaded: Memory, Behavioral Analysis, Prompt Composer")
+            print(f"🤖 LLM Status: {'OpenAI API' if _pipeline.llm else 'Mock LLM'}")
         except Exception as e:
             print(f"❌ CRITICAL: Full pipeline failed: {e}")
             print("🔥 NO FALLBACKS! System requires full LangGraph to work!")

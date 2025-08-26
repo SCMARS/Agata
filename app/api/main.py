@@ -7,16 +7,16 @@ from datetime import datetime
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
-# Add the parent directory to the path to import from app
+
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from config.settings import settings
 
-# Configure logging
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ГЛОБАЛЬНЫЙ PIPELINE INSTANCE для избежания пересоздания
+
 _pipeline = None
 _executor = ThreadPoolExecutor(max_workers=4)
 
@@ -27,10 +27,10 @@ def get_pipeline():
         try:
             from graph.pipeline import AgathaPipeline
             _pipeline = AgathaPipeline()
-            print("✅ Pipeline initialized successfully")
+            print(" Pipeline initialized successfully")
         except Exception as e:
-            print(f"❌ Pipeline initialization failed: {e}")
-            # Создаем mock pipeline
+            print(f" Pipeline initialization failed: {e}")
+            
             class MockPipeline:
                 async def process_chat(self, user_id, messages, meta_time=None):
                     return {
@@ -52,22 +52,22 @@ def run_async_in_thread(async_func, *args, **kwargs):
             loop.close()
     
     future = _executor.submit(wrapper)
-    return future.result(timeout=30)  # 30 секунд timeout
+    return future.result(timeout=30)  
 
 def create_app():
     """Application factory"""
     app = Flask(__name__)
     
-    # Enable CORS
+    
     CORS(app)
     
-    # Configuration
+    
     app.config['DEBUG'] = settings.DEBUG
     
-    # Health check endpoints
+    
     @app.route('/healthz')
     def health_check():
-        """Basic health check endpoint"""
+        
         return jsonify({
             'status': 'healthy',
             'timestamp': datetime.utcnow().isoformat(),
@@ -101,7 +101,7 @@ def create_app():
                 'timestamp': datetime.utcnow().isoformat()
             }), 503
     
-    # API Info endpoint
+   
     @app.route('/api/info')
     def api_info():
         """API information endpoint"""
@@ -117,14 +117,14 @@ def create_app():
             }
         })
     
-    # ИСПРАВЛЕННЫЙ chat endpoint
+   
     @app.route('/api/chat', methods=['POST'])
     def chat():
-        """Main chat endpoint with Agatha pipeline - ИСПРАВЛЕНО"""
+        
         try:
             data = request.get_json()
             
-            # Validate input
+            
             if not data:
                 return jsonify({'error': 'No data provided'}), 400
             
@@ -138,10 +138,10 @@ def create_app():
             if not messages:
                 return jsonify({'error': 'messages are required'}), 400
             
-            # Получить pipeline singleton
+            
             pipeline = get_pipeline()
             
-            # ПРАВИЛЬНЫЙ async вызов в отдельном потоке
+            
             response = run_async_in_thread(
                 pipeline.process_chat, 
                 user_id, 
@@ -157,7 +157,7 @@ def create_app():
             logger.error(f"Chat endpoint error: {e}")
             return jsonify({'error': 'Internal server error'}), 500
     
-    # Error handlers
+    
     @app.errorhandler(404)
     def not_found(error):
         return jsonify({'error': 'Endpoint not found'}), 404

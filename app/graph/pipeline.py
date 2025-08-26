@@ -1,4 +1,5 @@
 import asyncio
+import os
 import random
 import re
 from datetime import datetime
@@ -55,13 +56,16 @@ class AgathaPipeline:
         self.prompt_composer = PromptComposer()
         
         # Initialize LLM - НОВЫЙ API
-        if settings.OPENAI_API_KEY:
+        api_key = os.getenv('OPENAI_API_KEY') or settings.OPENAI_API_KEY
+        if api_key:
+            print(f"🔑 Using OpenAI API key: {api_key[:20]}...")
             self.llm = ChatOpenAI(
-                api_key=settings.OPENAI_API_KEY,
+                api_key=api_key,
                 model=settings.LLM_MODEL,
                 temperature=0.8
             )
         else:
+            print("⚠️ No OpenAI API key found, using Mock LLM")
             self.llm = None  
         
         
@@ -296,6 +300,8 @@ class AgathaPipeline:
         print(f"   Day: {state['day_number']}")
         print(f"   User emotion: {behavioral_analysis.get('dominant_emotion', 'unknown')}")
         print(f"   Prompt length: {len(state['final_prompt'])} chars")
+        print(f"   Max length setting: {settings.MAX_MESSAGE_LENGTH}")
+        print(f"   Final prompt preview: {state['final_prompt'][:300]}...")
         
         return state
     
@@ -437,10 +443,13 @@ class AgathaPipeline:
         else:
             try:
                 # Реальный API OpenAI
+                print(f"🤖 Calling OpenAI API with prompt length: {len(state['final_prompt'])}")
                 response = await self.llm.ainvoke([HumanMessage(content=state["final_prompt"])])
                 state["llm_response"] = response.content.strip()
+                print(f"✅ OpenAI response length: {len(state['llm_response'])} chars")
+                print(f"📝 Response preview: {state['llm_response'][:200]}...")
             except Exception as e:
-                print(f"LLM call failed: {e}")
+                print(f"❌ LLM call failed: {e}")
                 state["llm_response"] = "Извини, у меня сейчас проблемы с обработкой. Попробуй еще раз?"
         
         return state

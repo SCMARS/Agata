@@ -53,7 +53,23 @@ class HybridMemory(MemoryAdapter):
             context_parts.append(f"Долгосрочная память: {long_context}")
         
         if short_context:
-            context_parts.append(f"Недавние сообщения: {short_context}")
+            # Обрабатываем многострочный контекст из BufferMemory
+            if "\n" in short_context:
+                # Извлекаем ключевую информацию из первой строки
+                lines = short_context.split('\n')
+                key_info_line = None
+                for line in lines:
+                    if line.startswith("Ключевая информация:"):
+                        key_info_line = line
+                        break
+                
+                if key_info_line:
+                    context_parts.append(key_info_line)
+                
+                # Добавляем краткое описание недавних сообщений
+                context_parts.append("Недавние сообщения: последние 5 сообщений")
+            else:
+                context_parts.append(f"Недавние сообщения: {short_context}")
         
         return " | ".join(context_parts)
     

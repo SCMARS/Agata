@@ -15,7 +15,7 @@ class MessageController:
     - Эмоциональной окраской
     """
     
-    def __init__(self, max_message_length: int = 200, question_frequency: int = 3):
+    def __init__(self, max_message_length: int = 150, question_frequency: int = 3):
         self.max_message_length = max_message_length
         self.question_frequency = question_frequency  # Каждые N сообщений
         self.question_counter = 0
@@ -38,7 +38,7 @@ class MessageController:
             'вопрос': ['?', 'интересно', 'а что если', 'может быть']
         }
     
-    async def process_message(self, content: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    def process_message(self, content: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         Основная функция обработки сообщения
         
@@ -50,7 +50,7 @@ class MessageController:
         }
         """
         # Извлекаем темы из текущего сообщения
-        current_topics = await self._extract_conversation_topics(content)
+        current_topics = self._extract_conversation_topics(content)
         for topic in current_topics:
             if topic not in self.conversation_topics:
                 self.conversation_topics.append(topic)
@@ -63,7 +63,7 @@ class MessageController:
         has_existing_question = '?' in content
         
         # Определяем нужно ли добавить вопрос
-        should_add_question = await self._should_add_question(context)
+        should_add_question = self._should_add_question(context)
         
         final_content = content
         final_has_question = has_existing_question
@@ -72,7 +72,7 @@ class MessageController:
         # 1. Пришло время для вопроса по счетчику
         # 2. В оригинальном тексте нет вопроса
         if should_add_question and not has_existing_question:
-            contextual_question = await self._generate_contextual_question(context)
+            contextual_question = self._generate_contextual_question(context)
             final_content = f"{content} {contextual_question}"
             final_has_question = True
             print(f"🔍 MessageController: Добавлен вопрос: {contextual_question}")
@@ -84,13 +84,13 @@ class MessageController:
         # Разбиваем сообщение на части если оно слишком длинное
         if len(final_content) > self.max_message_length:
             print(f"🔄 Разбиваем сообщение длиной {len(final_content)} символов")
-            parts = await self._split_long_message(final_content)
+            parts = self._split_long_message(final_content)
             print(f"🔄 Результат: {len(parts)} частей")
         else:
             parts = [final_content]
         
         # Рассчитываем задержки
-        delays = await self._calculate_delays(parts, context)
+        delays = self._calculate_delays(parts, context)
         
         return {
             'parts': parts,
@@ -98,7 +98,7 @@ class MessageController:
             'delays_ms': delays
         }
     
-    async def _extract_conversation_topics(self, content: str) -> List[str]:
+    def _extract_conversation_topics(self, content: str) -> List[str]:
         """Извлечь темы из контента сообщения"""
         topics = []
         content_lower = content.lower()
@@ -121,7 +121,7 @@ class MessageController:
         
         return topics
 
-    async def _should_add_question(self, context: Dict[str, Any]) -> bool:
+    def _should_add_question(self, context: Dict[str, Any]) -> bool:
         """Определить, нужно ли добавить вопрос с учетом частоты"""
         self.question_counter += 1
         
@@ -136,7 +136,7 @@ class MessageController:
         print(f"🔍 MessageController: НЕ время для вопроса (счетчик: {self.question_counter})")
         return False
 
-    async def _generate_contextual_question(self, context: Dict[str, Any]) -> str:
+    def _generate_contextual_question(self, context: Dict[str, Any]) -> str:
         """Сгенерировать вопрос на основе тем предыдущих разговоров"""
         recent_topics = self.conversation_topics[-3:] if self.conversation_topics else []
         user_mood = context.get('recent_mood', 'neutral')
@@ -279,7 +279,7 @@ class MessageController:
         
         return content
     
-    async def _split_long_message(self, content: str) -> List[str]:
+    def _split_long_message(self, content: str) -> List[str]:
         """Умно разбить длинное сообщение на части"""
         if len(content) <= self.max_message_length:
             return [content]
@@ -417,7 +417,7 @@ class MessageController:
         
         return 0  # Не найдено хорошее место для разбиения
     
-    async def _calculate_delays(self, parts: List[str], context: Dict[str, Any]) -> List[int]:
+    def _calculate_delays(self, parts: List[str], context: Dict[str, Any]) -> List[int]:
         """Вычислить задержки между частями сообщения"""
         delays = []
         
@@ -467,7 +467,7 @@ class MessageController:
         
         return delays
     
-    async def add_emotional_coloring(self, content: str, strategy: str, mood: str) -> str:
+    def add_emotional_coloring(self, content: str, strategy: str, mood: str) -> str:
         """Добавить эмоциональную окраску в зависимости от стратегии и настроения"""
         
         # Эмодзи для разных стратегий

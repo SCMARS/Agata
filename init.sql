@@ -111,6 +111,22 @@ CREATE TABLE user_insights (
     is_active BOOLEAN DEFAULT true
 );
 
+-- Vector Memory table for semantic search
+CREATE TABLE IF NOT EXISTS vector_memories (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL,
+    content TEXT NOT NULL,
+    role VARCHAR(50) NOT NULL,
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    day_number INTEGER NOT NULL,
+    importance_score FLOAT NOT NULL,
+    topics JSONB,
+    emotions JSONB,
+    metadata JSONB,
+    embedding VECTOR(1536), -- OpenAI text-embedding-ada-002 dimension
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- Indexes for performance
 CREATE INDEX idx_users_user_id ON users(user_id);
 CREATE INDEX idx_users_last_activity ON users(last_activity);
@@ -135,6 +151,17 @@ CREATE INDEX idx_memory_summaries_date_range ON memory_summaries USING GIST(date
 CREATE INDEX idx_user_insights_user_id ON user_insights(user_id);
 CREATE INDEX idx_user_insights_type ON user_insights(insight_type);
 CREATE INDEX idx_user_insights_date ON user_insights(observed_date);
+
+-- Indexes for fast retrieval
+CREATE INDEX IF NOT EXISTS idx_vector_memories_user_id ON vector_memories(user_id);
+CREATE INDEX IF NOT EXISTS idx_vector_memories_timestamp ON vector_memories(timestamp);
+CREATE INDEX IF NOT EXISTS idx_vector_memories_importance ON vector_memories(importance_score);
+
+-- Vector index for semantic search using cosine similarity
+CREATE INDEX IF NOT EXISTS idx_vector_memories_embedding 
+ON vector_memories 
+USING ivfflat (embedding vector_cosine_ops) 
+WITH (lists = 100);
 
 -- Functions for automatic updates
 CREATE OR REPLACE FUNCTION update_updated_at_column()

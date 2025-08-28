@@ -1,4 +1,3 @@
-import asyncio
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
 import json
@@ -15,7 +14,7 @@ class BufferMemory(MemoryAdapter):
         self.messages: List[Message] = []
         self.last_activity: datetime = datetime.utcnow()
     
-    async def add_message(self, message: Message, context: MemoryContext) -> None:
+    def add_message(self, message: Message, context: MemoryContext) -> None:
         """Add message to buffer"""
         self.messages.append(message)
         self.last_activity = datetime.utcnow()
@@ -24,7 +23,7 @@ class BufferMemory(MemoryAdapter):
         if len(self.messages) > self.max_messages:
             self.messages = self.messages[-self.max_messages:]
     
-    async def get_context(self, context: MemoryContext) -> str:
+    def get_context(self, context: MemoryContext) -> str:
         """Get formatted context from recent messages with key information extraction"""
         if not self.messages:
             return "Это начало вашего разговора."
@@ -38,7 +37,7 @@ class BufferMemory(MemoryAdapter):
             context_parts.append(f"Прошло {self._format_time_gap(time_gap)} с последнего сообщения.")
         
         # Extract key information from user messages
-        key_info = await self._extract_key_information()
+        key_info = self._extract_key_information()
         if key_info:
             context_parts.append(f"Ключевая информация: {key_info}")
             print(f"🧠 BufferMemory: Извлечена ключевая информация: {key_info}")
@@ -53,7 +52,7 @@ class BufferMemory(MemoryAdapter):
         
         return "\n".join(context_parts)
     
-    async def _extract_key_information(self) -> str:
+    def _extract_key_information(self) -> str:
         """Extract key information from user messages"""
         user_messages = [msg for msg in self.messages if msg.role == "user"]
         if not user_messages:
@@ -138,7 +137,7 @@ class BufferMemory(MemoryAdapter):
         
         return "; ".join(key_info) if key_info else ""
     
-    async def search_memory(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    def search_memory(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """Simple text search in buffer (not semantic)"""
         results = []
         query_lower = query.lower()
@@ -156,7 +155,7 @@ class BufferMemory(MemoryAdapter):
         
         return results
     
-    async def summarize_conversation(self, messages: List[Message]) -> str:
+    def summarize_conversation(self, messages: List[Message]) -> str:
         """Simple summarization"""
         if not messages:
             return "Нет сообщений для обобщения."
@@ -179,7 +178,7 @@ class BufferMemory(MemoryAdapter):
         
         return summary
     
-    async def clear_memory(self) -> None:
+    def clear_memory(self) -> None:
         """Clear buffer memory"""
         self.messages.clear()
         self.last_activity = datetime.utcnow()

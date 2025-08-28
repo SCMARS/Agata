@@ -1,9 +1,16 @@
 import os
 from typing import Optional
+from dotenv import load_dotenv
+
+# Загружаем переменные окружения из .env файла
+load_dotenv('config.env')
 
 class Settings:
     """Application settings configuration"""
-    
+
+    # Base directory
+    BASE_DIR: str = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
     # Flask
     FLASK_ENV: str = os.getenv('FLASK_ENV', 'development')
     DEBUG: bool = os.getenv('DEBUG', 'False').lower() == 'true'
@@ -12,6 +19,13 @@ class Settings:
     
     # Database
     DATABASE_URL: str = os.getenv('DATABASE_URL', 'postgresql://agatha:agatha@postgres:5432/agatha')
+    
+    # Database connection parameters for pgvector
+    DATABASE_HOST: str = os.getenv('DATABASE_HOST', 'localhost')
+    DATABASE_PORT: int = int(os.getenv('DATABASE_PORT', '5432'))
+    DATABASE_USER: str = os.getenv('DATABASE_USER', 'postgres')
+    DATABASE_PASSWORD: str = os.getenv('DATABASE_PASSWORD', 'postgres')
+    DATABASE_NAME: str = os.getenv('DATABASE_NAME', 'agatha')
     
     # Redis
     REDIS_URL: str = os.getenv('REDIS_URL', 'redis://redis:6379/0')
@@ -35,7 +49,7 @@ class Settings:
     QUESTION_FREQUENCY: int = int(os.getenv('QUESTION_FREQUENCY', '3'))
     
     # Memory
-    MEMORY_TYPE: str = os.getenv('MEMORY_TYPE', 'buffer')  # buffer, summary, vector
-    VECTOR_STORE_TYPE: str = os.getenv('VECTOR_STORE_TYPE', 'faiss')  # faiss, chroma, pinecone
+    MEMORY_TYPE: str = os.getenv('MEMORY_TYPE', 'hybrid')
+    VECTOR_STORE_TYPE: str = os.getenv('VECTOR_STORE_TYPE', 'pgvector')
 
 settings = Settings() 

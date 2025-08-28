@@ -21,17 +21,28 @@ else:
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import logging
-import asyncio
+
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configure logging with quiet mode option
+QUIET_MODE = os.getenv('AGATHA_QUIET', 'false').lower() == 'true'
+
+if QUIET_MODE:
+    # Quiet mode - только критические ошибки
+    logging.basicConfig(level=logging.ERROR)
+    # Отключаем httpx логи
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.WARNING)
+else:
+    # Normal mode - полная информация для разработки
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
 
 
 _pipeline = None
-_executor = ThreadPoolExecutor(max_workers=4)
+_executor = None
 
 def get_pipeline():
     """Получить singleton instance pipeline - ТОЛЬКО ПОЛНЫЙ LANGGRAPH!"""
@@ -53,18 +64,23 @@ def get_pipeline():
             raise Exception(f"Pipeline initialization failed: {e}")
     return _pipeline
 
-def run_async_in_thread(async_func, *args, **kwargs):
-    """Запускать async функции в отдельном потоке"""
-    def wrapper():
+def get_executor():
+    """Получить ThreadPoolExecutor"""
+    global _executor
+    if _executor is None:
+        _executor = ThreadPoolExecutor(max_workers=4)
+    return _executor
+
+def async_pipeline_wrapper(pipeline, user_id, messages, meta_time):
+    """Wrapper для асинхронного вызова pipeline"""
+    import asyncio
+    try:
+        # Создаем новый event loop для этого потока
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(async_func(*args, **kwargs))
-        finally:
-            loop.close()
-    
-    future = _executor.submit(wrapper)
-    return future.result(timeout=30)
+        return loop.run_until_complete(pipeline.process_chat(user_id, messages, meta_time))
+    finally:
+        loop.close()
 
 def create_app():
     """Application factory"""
@@ -146,14 +162,10 @@ def create_app():
             
             # Получить pipeline singleton
             pipeline = get_pipeline()
-            
-            # Запустить async pipeline в отдельном потоке
-            response = run_async_in_thread(
-                pipeline.process_chat, 
-                user_id, 
-                messages, 
-                meta_time
-            )
+
+            # Запустить async pipeline через executor
+            executor = get_executor()
+            response = executor.submit(async_pipeline_wrapper, pipeline, user_id, messages, meta_time).result(timeout=60)
             
             logger.info(f"✅ Chat request from user {user_id} with {len(messages)} messages processed")
             
@@ -201,5 +213,5 @@ if __name__ == '__main__':
     app.run(
         host='0.0.0.0',
         port=8000,
-        debug=True
+        debug=False
     ) 

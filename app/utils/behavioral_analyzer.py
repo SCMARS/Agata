@@ -86,7 +86,7 @@ class BehavioralAnalyzer:
             'sharing_emotions': r'(чувствую|ощущаю|переживаю|настроение)'  # Делится эмоциями
         }
     
-    async def analyze_user_behavior(self, messages: List[Dict], user_profile: Dict = None, 
+    def analyze_user_behavior(self, messages: List[Dict], user_profile: Dict = None,
                                   conversation_context: Dict = None) -> Dict[str, Any]:
         """
         Полный анализ поведения пользователя
@@ -117,22 +117,22 @@ class BehavioralAnalyzer:
         all_content = ' '.join([msg.get('content', '') for msg in recent_messages])
         
         # 1. Анализ эмоций
-        emotion_analysis = await self._analyze_emotions(all_content, recent_messages)
+        emotion_analysis = self._analyze_emotions(all_content, recent_messages)
         
         # 2. Анализ тем
-        topic_analysis = await self._analyze_topics(all_content)
+        topic_analysis = self._analyze_topics(all_content)
         
         # 3. Анализ стиля коммуникации  
-        communication_analysis = await self._analyze_communication_style(recent_messages)
+        communication_analysis = self._analyze_communication_style(recent_messages)
         
         # 4. Анализ потребностей в отношениях
-        relationship_analysis = await self._analyze_relationship_needs(
+        relationship_analysis = self._analyze_relationship_needs(
             all_content, user_profile, conversation_context
         )
         
         # 5. Выбор стратегии на основе всех анализов
-        strategy_choice = await self._choose_strategy(
-            emotion_analysis, topic_analysis, communication_analysis, 
+        strategy_choice = self._choose_strategy(
+            emotion_analysis, topic_analysis, communication_analysis,
             relationship_analysis, user_profile, conversation_context
         )
         
@@ -152,7 +152,7 @@ class BehavioralAnalyzer:
             'context_factors': strategy_choice['context_factors']
         }
     
-    async def _analyze_emotions(self, content: str, messages: List[Dict]) -> Dict[str, Any]:
+    def _analyze_emotions(self, content: str, messages: List[Dict]) -> Dict[str, Any]:
         """Анализ эмоционального состояния"""
         content_lower = content.lower()
         emotion_scores = {}
@@ -185,7 +185,7 @@ class BehavioralAnalyzer:
             intensity = min(max_score / 10.0, 1.0)  # Нормализуем к 0-1
         
         # Анализ эмоциональной стабильности (изменения эмоций между сообщениями)
-        stability = await self._calculate_emotional_stability(messages)
+        stability = self._calculate_emotional_stability(messages)
         
         return {
             'dominant_emotion': dominant_emotion,
@@ -194,7 +194,7 @@ class BehavioralAnalyzer:
             'emotion_scores': emotion_scores
         }
     
-    async def _analyze_topics(self, content: str) -> Dict[str, Any]:
+    def _analyze_topics(self, content: str) -> Dict[str, Any]:
         """Анализ тем разговора"""
         content_lower = content.lower()
         topic_scores = {}
@@ -218,7 +218,7 @@ class BehavioralAnalyzer:
             'focus_level': focus_level
         }
     
-    async def _analyze_communication_style(self, messages: List[Dict]) -> Dict[str, Any]:
+    def _analyze_communication_style(self, messages: List[Dict]) -> Dict[str, Any]:
         """Анализ стиля коммуникации"""
         if not messages:
             return {'style': 'balanced', 'engagement': 'moderate'}
@@ -260,8 +260,8 @@ class BehavioralAnalyzer:
             'pattern_matches': pattern_matches
         }
     
-    async def _analyze_relationship_needs(self, content: str, user_profile: Dict = None, 
-                                        conversation_context: Dict = None) -> Dict[str, Any]:
+    def _analyze_relationship_needs(self, content: str, user_profile: Dict = None,
+                                         conversation_context: Dict = None) -> Dict[str, Any]:
         """Анализ потребностей в отношениях"""
         content_lower = content.lower()
         
@@ -310,9 +310,9 @@ class BehavioralAnalyzer:
             'intimacy_level': intimacy_level
         }
     
-    async def _choose_strategy(self, emotion_analysis: Dict, topic_analysis: Dict, 
-                             communication_analysis: Dict, relationship_analysis: Dict,
-                             user_profile: Dict = None, conversation_context: Dict = None) -> Dict[str, Any]:
+    def _choose_strategy(self, emotion_analysis: Dict, topic_analysis: Dict,
+                               communication_analysis: Dict, relationship_analysis: Dict,
+                               user_profile: Dict = None, conversation_context: Dict = None) -> Dict[str, Any]:
         """Выбор оптимальной поведенческой стратегии"""
         
         # Доступные стратегии с весами
@@ -416,7 +416,7 @@ class BehavioralAnalyzer:
         confidence = strategy_scores[best_strategy] / max(sum(strategy_scores.values()), 1.0)
         
         # Создаем поведенческие корректировки
-        adjustments = await self._create_behavioral_adjustments(
+        adjustments = self._create_behavioral_adjustments(
             best_strategy, emotion_analysis, relationship_analysis, communication_analysis
         )
         
@@ -436,8 +436,8 @@ class BehavioralAnalyzer:
             'alternative_strategies': sorted(strategy_scores.items(), key=lambda x: x[1], reverse=True)[1:3]
         }
     
-    async def _create_behavioral_adjustments(self, strategy: str, emotion_analysis: Dict, 
-                                           relationship_analysis: Dict, communication_analysis: Dict) -> Dict[str, Any]:
+    def _create_behavioral_adjustments(self, strategy: str, emotion_analysis: Dict,
+                                             relationship_analysis: Dict, communication_analysis: Dict) -> Dict[str, Any]:
         """Создание конкретных поведенческих корректировок для стратегии"""
         
         adjustments = {
@@ -529,7 +529,7 @@ class BehavioralAnalyzer:
         
         return adjustments
     
-    async def _calculate_emotional_stability(self, messages: List[Dict]) -> float:
+    def _calculate_emotional_stability(self, messages: List[Dict]) -> float:
         """Вычисляет эмоциональную стабильность пользователя"""
         if len(messages) < 2:
             return 0.8  # Нейтральная стабильность

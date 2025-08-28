@@ -27,27 +27,27 @@ class MemoryAdapter(ABC):
         self.user_id = user_id
     
     @abstractmethod
-    async def add_message(self, message: Message, context: MemoryContext) -> None:
+    def add_message(self, message: Message, context: MemoryContext) -> None:
         """Add a message to memory"""
         pass
     
     @abstractmethod
-    async def get_context(self, context: MemoryContext) -> str:
+    def get_context(self, context: MemoryContext) -> str:
         """Get formatted context for the prompt"""
         pass
     
     @abstractmethod
-    async def search_memory(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    def search_memory(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """Search through memory semantically"""
         pass
     
     @abstractmethod
-    async def summarize_conversation(self, messages: List[Message]) -> str:
+    def summarize_conversation(self, messages: List[Message]) -> str:
         """Summarize a conversation"""
         pass
     
     @abstractmethod
-    async def clear_memory(self) -> None:
+    def clear_memory(self) -> None:
         """Clear user's memory"""
         pass
 

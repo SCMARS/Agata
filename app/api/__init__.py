@@ -1,10 +1,10 @@
 # API endpoints package
 
 from flask import Flask
-from app.api.main import app
+from app.api.main import create_app
 
-__all__ = ['app']
+__all__ = ['create_app']
 
-def create_app():
-    
-    return app 
+def get_app():
+    """Get the Flask application instance"""
+    return create_app() 

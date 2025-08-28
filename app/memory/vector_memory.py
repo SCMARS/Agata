@@ -1,242 +1,378 @@
 """
-Vector Memory Adapter with semantic search for long-term memory
+Vector Memory Adapter with REAL vector database (pgvector) for semantic search
 """
+import os
 import json
-import asyncio
+
+import psycopg2
+import psycopg2.extras
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from .base import MemoryAdapter, Message, MemoryContext
 
+# Quiet mode setting
+QUIET_MODE = os.getenv('AGATHA_QUIET', 'false').lower() == 'true'
+
+def log_info(message: str):
+    """Условное логирование - только если не quiet mode"""
+    if not QUIET_MODE:
+        print(message)
+from ..config.settings import settings
+
 class VectorMemory(MemoryAdapter):
     """
-    Векторная память для долгосрочного хранения с семантическим поиском
+    Векторная память с настоящей БД (pgvector) для семантического поиска
     """
     
     def __init__(self, user_id: str, max_memories: int = 1000):
         self.user_id = user_id
         self.max_memories = max_memories
-        self.memories: List[Dict[str, Any]] = []
-        self.embeddings_cache = {}
+        self.db_pool = None
+        self.connection_error = False
+        # Добавляем недостающий атрибут memories для совместимости
+        self.memories = []
         
-    async def add_message(self, message: Message, context: MemoryContext) -> None:
-        """Добавить сообщение в долгосрочную память"""
-        # Создаем память только для важных сообщений
-        is_important = await self._is_important_message(message, context)
-        print(f"🧠 VectorMemory: Сообщение '{message.content[:50]}...' важное: {is_important}")
-        
-        if is_important:
-            importance_score = await self._calculate_importance(message, context)
-            memory_entry = {
-                'id': f"{self.user_id}_{datetime.utcnow().isoformat()}",
-                'content': message.content,
-                'role': message.role,
-                'timestamp': message.timestamp.isoformat(),
-                'day_number': context.day_number,
-                'importance_score': importance_score,
-                'topics': await self._extract_topics(message.content),
-                'emotions': await self._detect_emotions(message.content),
-                'metadata': {
-                    'user_id': self.user_id,
-                    'message_length': len(message.content),
-                    'has_question': '?' in message.content,
-                    'day_context': context.day_number
-                }
-            }
-            
-            # Добавляем в память
-            self.memories.append(memory_entry)
-            print(f"🧠 VectorMemory: Добавлено в память (важность: {importance_score:.2f}). Всего воспоминаний: {len(self.memories)}")
-            
-            # Ограничиваем размер памяти
-            if len(self.memories) > self.max_memories:
-                # Удаляем наименее важные воспоминания
-                self.memories.sort(key=lambda x: x['importance_score'], reverse=True)
-                self.memories = self.memories[:self.max_memories]
-        else:
-            print(f"🧠 VectorMemory: Сообщение не важное, не сохраняем")
+    def _get_db_pool(self):
+        """Получить пул соединений с БД (устаревший метод)"""
+        print("⚠️ _get_db_pool устарел, используйте _get_db_conn")
+        return None
+
+    def _get_db_conn(self):
+        """Получить соединение с БД PostgreSQL"""
+        try:
+            if self.connection_error:
+                print("⚠️ Соединение с БД ранее не удалось, пропускаем")
+                return None
+
+            conn = psycopg2.connect(
+                host=settings.DATABASE_HOST,
+                port=settings.DATABASE_PORT,
+                user=settings.DATABASE_USER,
+                password=settings.DATABASE_PASSWORD,
+                database=settings.DATABASE_NAME
+            )
+            conn.autocommit = False
+            return conn
+
+        except Exception as e:
+            print(f"❌ Ошибка подключения к БД: {e}")
+            print(f"📍 Попытка подключения к: {settings.DATABASE_HOST}:{settings.DATABASE_PORT}/{settings.DATABASE_NAME}")
+            self.connection_error = True
+            return None
     
-    async def get_context(self, context: MemoryContext, query: str = "") -> str:
-        """Получить контекст из долгосрочной памяти"""
-        print(f"🧠 VectorMemory: Запрос контекста. Всего воспоминаний: {len(self.memories)}")
-        
-        if not self.memories:
-            print(f"🧠 VectorMemory: Нет воспоминаний, возвращаем базовый ответ")
-            return "Это наше первое общение."
-        
-        # Поиск релевантных воспоминаний
-        relevant_memories = await self._search_memories(query, context, limit=5)
-        
-        # Если нет релевантных по запросу, берем самые важные
-        if not relevant_memories and self.memories:
-            relevant_memories = sorted(self.memories, key=lambda x: x['importance_score'], reverse=True)[:3]
-            print(f"🧠 VectorMemory: Нет релевантных, взяли {len(relevant_memories)} самых важных")
-        
-        if not relevant_memories:
+    def _ensure_tables(self):
+        """Создать таблицы если их нет"""
+        # Кэшируем результат - не создаем таблицы повторно
+        if hasattr(self, '_tables_created') and self._tables_created:
+            return True
+            
+        conn = self._get_db_conn()
+        if not conn:
+            print("⚠️ БД недоступна, пропускаем создание таблиц")
+            return False
+            
+        try:
+            with conn.cursor() as cursor:
+                # Создаем таблицу для векторных воспоминаний
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS vector_memories (
+                        id SERIAL PRIMARY KEY,
+                        user_id VARCHAR(255) NOT NULL,
+                        content TEXT NOT NULL,
+                        role VARCHAR(50) NOT NULL,
+                        timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+                        day_number INTEGER NOT NULL,
+                        importance_score FLOAT NOT NULL,
+                        topics JSONB,
+                        emotions JSONB,
+                        metadata JSONB,
+                        embedding VECTOR(1536),
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    );
+                """)
+                
+                # Создаем индексы для быстрого поиска
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_vector_memories_user_id ON vector_memories(user_id);
+                    CREATE INDEX IF NOT EXISTS idx_vector_memories_timestamp ON vector_memories(timestamp);
+                    CREATE INDEX IF NOT EXISTS idx_vector_memories_importance ON vector_memories(importance_score);
+                """)
+                
+                # Создаем векторный индекс для семантического поиска
+                try:
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_vector_memories_embedding 
+                        ON vector_memories 
+                        USING ivfflat (embedding vector_cosine_ops) 
+                        WITH (lists = 100);
+                    """)
+                except Exception as e:
+                    print(f"⚠️ Векторный индекс не создан (возможно pgvector не установлен): {e}")
+                
+                conn.commit()
+                print("✅ Таблицы и индексы созданы/проверены")
+                self._tables_created = True  # Кэшируем результат
+                return True
+                
+        except Exception as e:
+            print(f"❌ Ошибка создания таблиц: {e}")
+            return False
+    
+    def _generate_embedding(self, text: str) -> List[float]:
+        """Генерируем векторное представление текста"""
+        try:
+            # Используем OpenAI embeddings для настоящего семантического понимания
+            import openai
+            if not settings.OPENAI_API_KEY:
+                print("❌ OpenAI API ключ не найден!")
+                print("💡 Добавьте OPENAI_API_KEY в config.env файл")
+                raise Exception("OpenAI API key required")
+                
+            print(f"🔑 Используем OpenAI API ключ: {settings.OPENAI_API_KEY[:20]}...")
+            
+            # НОВЫЙ API для OpenAI 1.0.0+
+            client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+            response = client.embeddings.create(
+                input=text,
+                model="text-embedding-ada-002"
+            )
+            
+            embedding = response.data[0].embedding
+            print(f"✅ Настоящий эмбеддинг создан: {len(embedding)} элементов")
+            return embedding
+            
+        except Exception as e:
+            print(f"❌ Критическая ошибка генерации эмбеддинга: {e}")
+            print("💡 Система не может работать без OpenAI API")
+            raise Exception(f"Embedding generation failed: {e}")
+    
+    def add_message(self, message: Message, context: MemoryContext) -> None:
+        """Добавить сообщение в векторную БД"""
+        try:
+            # Проверяем доступность БД только один раз
+            if not hasattr(self, '_db_available'):
+                self._db_available = self._ensure_tables()
+            
+            if not self._db_available:
+                print("⚠️ БД недоступна, сообщение не сохранено")
+                return
+            
+            # Анализируем важность
+            is_important = self._is_important_message(message, context)
+            print(f"🧠 VectorMemory: Сообщение '{message.content[:50]}...' важное: {is_important}")
+            
+            if is_important:
+                importance_score = self._calculate_importance(message, context)
+                topics = self._extract_topics(message.content)
+                emotions = self._detect_emotions(message.content)
+                
+                # Генерируем эмбеддинг
+                embedding = self._generate_embedding(message.content)
+                
+                # Сохраняем в БД
+                conn = self._get_db_conn()
+                if conn:
+                    with conn.cursor() as cursor:
+                        # Преобразуем эмбеддинг в формат для PostgreSQL
+                        embedding_str = f"[{','.join(map(str, embedding))}]"
+                        
+                        cursor.execute("""
+                            INSERT INTO vector_memories 
+                            (user_id, content, role, timestamp, day_number, importance_score, 
+                             topics, emotions, metadata, embedding)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
+                        """, 
+                        (self.user_id, message.content, message.role, 
+                         message.timestamp, context.day_number, importance_score,
+                         json.dumps(topics), json.dumps(emotions),
+                         json.dumps({
+                             'message_length': len(message.content),
+                             'has_question': '?' in message.content,
+                             'day_context': context.day_number
+                         }),
+                         embedding_str)
+                        )
+                    
+                    conn.commit()
+                    print(f"🧠 VectorMemory: Сохранено в БД (важность: {importance_score:.2f})")
+                    
+                    # Очищаем старые записи если превышен лимит
+                    self._cleanup_old_memories()
+                else:
+                    print("⚠️ БД недоступна, сообщение не сохранено")
+            else:
+                print(f"🧠 VectorMemory: Сообщение не важное, не сохраняем")
+                
+        except Exception as e:
+            print(f"❌ Ошибка сохранения в VectorMemory: {e}")
+    
+    def _cleanup_old_memories(self):
+        """Очищаем старые записи если превышен лимит"""
+        try:
+            conn = self._get_db_conn()
+            if not conn:
+                return
+                
+            with conn.cursor() as cursor:
+                # Получаем количество записей для пользователя
+                cursor.execute(
+                    "SELECT COUNT(*) FROM vector_memories WHERE user_id = %s",
+                    (self.user_id,)
+                )
+                count = cursor.fetchone()[0]
+                
+                if count > self.max_memories:
+                    # Удаляем наименее важные записи
+                    cursor.execute("""
+                        DELETE FROM vector_memories 
+                        WHERE user_id = %s 
+                        AND id NOT IN (
+                            SELECT id FROM vector_memories 
+                            WHERE user_id = %s 
+                            ORDER BY importance_score DESC 
+                            LIMIT %s
+                        )
+                    """, (self.user_id, self.user_id, self.max_memories))
+                    
+                    conn.commit()
+                    print(f"🧠 VectorMemory: Очищено {count - self.max_memories} старых записей")
+                    
+        except Exception as e:
+            print(f"⚠️ Ошибка очистки памяти: {e}")
+    
+    def get_context(self, context: MemoryContext, query: str = "") -> str:
+        """Получить контекст из векторной БД с семантическим поиском"""
+        try:
+            # Проверяем доступность БД только один раз
+            if not hasattr(self, '_db_available'):
+                self._db_available = self._ensure_tables()
+            
+            if not self._db_available:
+                return "БД недоступна, используем базовый контекст."
+            
+            conn = self._get_db_conn()
+            if not conn:
+                return "БД недоступна, используем базовый контекст."
+            
+            with conn.cursor() as cursor:
+                # Получаем общее количество сообщений
+                cursor.execute(
+                    "SELECT COUNT(*) FROM vector_memories WHERE user_id = %s",
+                    (self.user_id,)
+                )
+                total_count = cursor.fetchone()[0]
+                
+                print(f"🧠 VectorMemory: Запрос контекста. Всего в БД: {total_count}")
+                
+                if total_count == 0:
+                    return "Это наше первое общение."
+                
+                # Семантический поиск если есть запрос
+                if query:
+                    query_embedding = self._generate_embedding(query)
+                    cursor.execute("""
+                        SELECT content, importance_score, topics, emotions
+                        FROM vector_memories
+                        WHERE user_id = %s
+                        ORDER BY embedding <=> %s, importance_score DESC
+                        LIMIT 5
+                    """, (self.user_id, query_embedding))
+                    relevant_memories = cursor.fetchall()
+                else:
+                    # Берем самые важные воспоминания
+                    cursor.execute("""
+                        SELECT content, importance_score, topics, emotions
+                        FROM vector_memories
+                        WHERE user_id = %s
+                        ORDER BY importance_score DESC
+                        LIMIT 5
+                    """, (self.user_id,))
+                    relevant_memories = cursor.fetchall()
+                
+                if not relevant_memories:
+                    return f"У нас уже было {total_count} важных разговоров."
+                
+                # Формируем умный контекст
+                context_parts = [f"Мы общаемся уже {total_count} важных сообщений."]
+                
+                for memory in relevant_memories:
+                    if memory[1] > 0.5:  # importance_score
+                        content_preview = memory[0][:100] + "..." if len(memory[0]) > 100 else memory[0]  # content
+                        context_parts.append(f"Помню: {content_preview}")
+                
+                print(f"🧠 Сформированный контекст: {' | '.join(context_parts)}")
+                return " | ".join(context_parts)
+                
+        except Exception as e:
+            print(f"❌ Ошибка получения контекста: {e}")
             return "У нас уже было несколько разговоров."
-        
-        # Формируем умный контекст
-        context_parts = []
-        
-        # Простое формирование контекста (временно упрощено)
-        context_parts.append(f"Мы общаемся уже {len(self.memories)} сообщений.")
-        
-        # Добавляем важные воспоминания
-        for memory in relevant_memories[:3]:
-            if memory['importance_score'] > 0.5:
-                content_preview = memory['content'][:80] + "..." if len(memory['content']) > 80 else memory['content']
-                context_parts.append(f"Помню: {content_preview}")
-        
-        print(f"🧠 Сформированный контекст: {' | '.join(context_parts)}")
-        
-        return " | ".join(context_parts)
     
-    async def _extract_user_profile(self, memories: List[Dict]) -> str:
-        """Извлечь профиль пользователя из воспоминаний"""
+    def _search_memories(self, query: str, context: MemoryContext, limit: int = 5) -> List[Dict[str, Any]]:
+        """Семантический поиск в векторной БД"""
         try:
-            profile_parts = []
+            if not self._ensure_tables():
+                return []
             
-            for memory in memories:
-                content = memory.get('content', '').lower()
+            if not query:
+                return []
+            
+            query_embedding = self._generate_embedding(query)
+            
+            conn = self._get_db_conn()
+            if not conn:
+                return []
                 
-                # Имя
-                if 'меня зовут' in content or 'мое имя' in content:
-                    # Простое извлечение имени
-                    words = memory.get('content', '').split()
-                    for i, word in enumerate(words):
-                        if word.lower() in ['зовут', 'имя'] and i + 1 < len(words):
-                            name = words[i + 1].strip('.,!?').title()
-                            if name and len(name) > 1:
-                                profile_parts.append(f"имя {name}")
-                                break
-            
-            # Возраст
-            if 'мне ' in content and 'лет' in content:
-                words = content.split()
-                for i, word in enumerate(words):
-                    if word == 'мне' and i + 1 < len(words):
-                        next_word = words[i + 1]
-                        if next_word.isdigit():
-                            profile_parts.append(f"{next_word} лет")
-                            break
-            
-            # Профессия
-            if 'работаю' in content or 'профессия' in content:
-                if 'учителем' in content: profile_parts.append("учитель")
-                elif 'врачом' in content: profile_parts.append("врач")
-                elif 'программистом' in content: profile_parts.append("программист")
-                elif 'дизайнером' in content: profile_parts.append("дизайнер")
-                elif 'инженером' in content: profile_parts.append("инженер")
-            
-            # Питомцы
-            if 'кот' in content or 'собака' in content:
-                words = memory['content'].split()
-                for i, word in enumerate(words):
-                    if word.lower() in ['кот', 'собака'] and 'имени' in content:
-                        # Ищем имя питомца
-                        for j in range(max(0, i-5), min(len(words), i+5)):
-                            if words[j].lower() in ['имени', 'зовут']:
-                                if j + 1 < len(words):
-                                    pet_name = words[j + 1].strip('.,!?').title()
-                                    pet_type = "кот" if "кот" in content else "собака"
-                                    profile_parts.append(f"{pet_type} {pet_name}")
-                                    break
-        
-            return ", ".join(list(set(profile_parts))[:3])  # Убираем дубли, берем первые 3
-        except Exception as e:
-            print(f"🧠 Ошибка извлечения профиля: {e}")
-            return ""
-    
-    async def _extract_conversation_themes(self, memories: List[Dict]) -> str:
-        """Извлечь темы разговоров"""
-        try:
-            themes = set()
-            
-            for memory in memories:
-                topics = memory.get('topics', [])
-                themes.update(topics[:2])  # Берем первые 2 темы из каждого воспоминания
-            
-            return ", ".join(list(themes)[:3])
-        except Exception as e:
-            print(f"🧠 Ошибка извлечения тем: {e}")
-            return ""
-    
-    async def _extract_emotional_context(self, memories: List[Dict]) -> str:
-        """Извлечь эмоциональный контекст"""
-        try:
-            emotions = []
-            
-            for memory in memories:
-                memory_emotions = memory.get('emotions', [])
-                emotions.extend(memory_emotions)
-            
-            if emotions:
-                # Находим доминирующую эмоцию
-                emotion_counts = {}
-                for emotion in emotions:
-                    emotion_counts[emotion] = emotion_counts.get(emotion, 0) + 1
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                # Преобразуем эмбеддинг в формат для PostgreSQL
+                query_embedding_str = f"[{','.join(map(str, query_embedding))}]"
                 
-                dominant_emotion = max(emotion_counts, key=emotion_counts.get)
-                return dominant_emotion
-            
-            return ""
+                # Семантический поиск + релевантность по важности
+                cursor.execute("""
+                    SELECT 
+                        content, role, timestamp, day_number, importance_score,
+                        topics, emotions, metadata,
+                        (embedding <=> %s::vector) as similarity_score
+                    FROM vector_memories 
+                    WHERE user_id = %s
+                    ORDER BY (embedding <=> %s::vector) + (1 - importance_score)
+                    LIMIT %s
+                """, (query_embedding_str, self.user_id, query_embedding_str, limit))
+                
+                results = cursor.fetchall()
+                memories = []
+                for row in results:
+                    memory = {
+                        'content': row['content'],
+                        'role': row['role'],
+                        'timestamp': row['timestamp'],
+                        'day_number': row['day_number'],
+                        'importance_score': row['importance_score'],
+                        'topics': row['topics'] or [],
+                        'emotions': row['emotions'] or [],
+                        'metadata': row['metadata'] or {},
+                        'similarity_score': row['similarity_score']
+                    }
+                    memories.append(memory)
+                
+                return memories
+                
         except Exception as e:
-            print(f"🧠 Ошибка извлечения эмоций: {e}")
-            return ""
+            print(f"❌ Ошибка поиска: {e}")
+            return []
     
-    async def _is_important_message(self, message: Message, context: MemoryContext) -> bool:
-        """Определить важность сообщения для долгосрочной памяти"""
+    def _is_important_message(self, message: Message, context: MemoryContext) -> bool:
+        
         content = message.content.lower()
         
-        # 1. ПЕРСОНАЛЬНАЯ ИНФОРМАЦИЯ (высокий приоритет)
-        personal_markers = [
-            'меня зовут', 'мое имя', 'я работаю', 'моя профессия', 'я учусь',
-            'мне ', 'лет', 'живу в', 'из ', 'родом', 'родился', 'родилась',
-            'семья', 'родители', 'мама', 'папа', 'брат', 'сестра', 'дети',
-            'женат', 'замужем', 'холост', 'не замужем', 'развод',
-            'жена', 'муж', 'сын', 'дочь', 'ребенок', 'дочка', 'сынок'
-        ]
+        # Категории важности
+        personal_markers = ['меня зовут', 'мое имя', 'я работаю', 'живу в', 'мне лет', 'я ', 'мне ', 'мой ', 'моя ', 'мои ']
+        interests_markers = ['мне нравится', 'я люблю', 'увлекаюсь', 'хобби', 'интересуюсь', 'специализируюсь']
+        emotional_markers = ['переживаю', 'волнуюсь', 'боюсь', 'радуюсь', 'грущу', 'злюсь', 'люблю', 'ненавижу']
+        goals_markers = ['планирую', 'хочу', 'собираюсь', 'мечтаю', 'цель', 'надеюсь']
+        social_markers = ['друзья', 'подруга', 'друг', 'коллеги', 'знакомые', 'отношения', 'семья']
+        events_markers = ['случилось', 'произошло', 'событие', 'новость', 'вчера', 'сегодня', 'работаю в']
+        memory_markers = ['помнишь', 'помни', 'запомни', 'забыл', 'напомни']
         
-        # 2. ИНТЕРЕСЫ И ХОББИ
-        interests_markers = [
-            'мне нравится', 'я люблю', 'увлекаюсь', 'хобби', 'интересуюсь',
-            'занимаюсь', 'играю в', 'читаю', 'смотрю', 'слушаю',
-            'коллекционирую', 'путешествую', 'готовлю'
-        ]
-        
-        # 3. ЭМОЦИИ И ПЕРЕЖИВАНИЯ
-        emotional_markers = [
-            'переживаю', 'волнуюсь', 'боюсь', 'радуюсь', 'грущу',
-            'злюсь', 'расстраиваюсь', 'счастлив', 'несчастлив',
-            'проблема', 'беспокоит', 'тревожит', 'мечтаю'
-        ]
-        
-        # 4. ПЛАНЫ И ЦЕЛИ
-        goals_markers = [
-            'планирую', 'хочу', 'собираюсь', 'мечтаю', 'цель',
-            'надеюсь', 'стремлюсь', 'пытаюсь', 'учусь', 'изучаю'
-        ]
-        
-        # 5. ОТНОШЕНИЯ И СОЦИАЛЬНЫЕ СВЯЗИ
-        social_markers = [
-            'друзья', 'подруга', 'друг', 'коллеги', 'знакомые',
-            'отношения', 'встречаюсь', 'расстались', 'познакомился',
-            'общаюсь', 'дружу', 'ссорюсь'
-        ]
-        
-        # 6. ВАЖНЫЕ СОБЫТИЯ
-        events_markers = [
-            'случилось', 'произошло', 'событие', 'новость',
-            'вчера', 'сегодня', 'недавно', 'давно', 'помню',
-            'забыл', 'напомни', 'расскажу', 'история'
-        ]
-        
-        # 7. ВОПРОСЫ О ПАМЯТИ
-        memory_markers = [
-            'помнишь', 'помни', 'запомни', 'забыл', 'напомни',
-            'рассказывал', 'говорил', 'упоминал'
-        ]
-        
-        # Проверяем все категории
         categories = [
             personal_markers, interests_markers, emotional_markers,
             goals_markers, social_markers, events_markers, memory_markers
@@ -248,25 +384,32 @@ class VectorMemory(MemoryAdapter):
                 importance_score += 1
         
         # Дополнительные факторы
-        is_detailed = len(message.content) > 80  # Детальные сообщения
-        has_questions = '?' in message.content  # Вопросы пользователя
+        is_detailed = len(message.content) > 50  # Уменьшили с 80 до 50
+        has_questions = '?' in message.content
         is_first_person = any(word in content for word in ['я ', 'мне ', 'мой ', 'моя ', 'мои '])
         
-        # Контекстуальная важность
-        is_response_to_question = any(word in content for word in ['да', 'нет', 'конечно', 'возможно'])
-        
-        # Финальная оценка
         final_score = importance_score
         if is_detailed: final_score += 0.5
         if has_questions: final_score += 0.3
         if is_first_person: final_score += 0.4
-        if is_response_to_question: final_score += 0.2
         
         print(f"🧠 Анализ важности: '{content[:30]}...' = {final_score:.1f} баллов")
         
-        return final_score >= 0.8  # Понижен порог важности
+        # СНИЖАЕМ ПОРОГ ВАЖНОСТИ с 0.8 до 0.5!
+        if final_score >= 0.5:  # БЫЛО 0.8, СТАЛО 0.5!
+            try:
+                # Пробуем сгенерировать эмбеддинг для проверки
+                test_embedding = self._generate_embedding("test")
+                print("✅ Эмбеддинги доступны, сообщение можно сохранить")
+                return True
+            except Exception as e:
+                print(f"❌ Эмбеддинги недоступны: {e}")
+                print("⚠️ Сообщение не может быть сохранено без OpenAI API")
+                return False
+        
+        return False
     
-    async def _calculate_importance(self, message: Message, context: MemoryContext) -> float:
+    def _calculate_importance(self, message: Message, context: MemoryContext) -> float:
         """Рассчитать важность сообщения (0.0 - 1.0)"""
         score = 0.0
         content = message.content.lower()
@@ -295,19 +438,19 @@ class VectorMemory(MemoryAdapter):
         
         return min(score, 1.0)
     
-    async def _extract_topics(self, content: str) -> List[str]:
+    def _extract_topics(self, content: str) -> List[str]:
         """Извлечь темы из сообщения"""
         content_lower = content.lower()
         topics = []
         
+        # Простые темы по ключевым словам
         topic_keywords = {
-            'работа': ['работа', 'работаю', 'профессия', 'карьера', 'коллеги', 'начальник'],
-            'семья': ['семья', 'родители', 'мама', 'папа', 'брат', 'сестра', 'дети'],
-            'отношения': ['отношения', 'любовь', 'парень', 'девушка', 'свидание', 'друзья'],
-            'хобби': ['хобби', 'увлечение', 'спорт', 'музыка', 'фильмы', 'игры', 'чтение'],
-            'здоровье': ['здоровье', 'болею', 'врач', 'лечение', 'самочувствие'],
-            'планы': ['планы', 'мечты', 'цели', 'хочу', 'планирую', 'надеюсь'],
-            'проблемы': ['проблема', 'беспокоит', 'стресс', 'переживаю', 'трудности']
+            'работа': ['работаю', 'профессия', 'карьера', 'бизнес', 'проект'],
+            'семья': ['семья', 'родители', 'дети', 'муж', 'жена', 'брат', 'сестра'],
+            'хобби': ['хобби', 'увлечения', 'спорт', 'музыка', 'кино', 'книги'],
+            'путешествия': ['путешествие', 'поездка', 'отпуск', 'командировка'],
+            'здоровье': ['здоровье', 'болезнь', 'врач', 'больница', 'лечение'],
+            'образование': ['учусь', 'образование', 'университет', 'курсы', 'обучение']
         }
         
         for topic, keywords in topic_keywords.items():
@@ -316,148 +459,197 @@ class VectorMemory(MemoryAdapter):
         
         return topics
     
-    async def _detect_emotions(self, content: str) -> List[str]:
+    def _detect_emotions(self, content: str) -> List[str]:
         """Определить эмоции в сообщении"""
         content_lower = content.lower()
         emotions = []
         
         emotion_keywords = {
-            'радость': ['радость', 'счастье', 'весело', 'отлично', 'прекрасно', ':)', '😊', '😄'],
-            'грусть': ['грусть', 'печаль', 'расстроен', 'плохо', 'ужасно', ':(', '😢', '😭'],
-            'злость': ['злость', 'сердит', 'раздражает', 'бесит', 'ненавижу', '😠', '😡'],
-            'страх': ['страх', 'боюсь', 'переживаю', 'волнуюсь', 'тревожно', '😰', '😱'],
-            'удивление': ['удивление', 'удивлен', 'невероятно', 'вау', 'ого', '😮', '😲'],
-            'усталость': ['устал', 'утомлен', 'измучен', 'нет сил', 'вымотан']
+            'радость': ['радуюсь', 'счастлив', 'весело', 'отлично', 'прекрасно', ':)', '😊'],
+            'грусть': ['грущу', 'грустно', 'печально', 'тоскливо', ':(', '😢'],
+            'злость': ['злюсь', 'злой', 'раздражен', 'бесит', '>:('],
+            'страх': ['боюсь', 'страшно', 'пугает', 'тревожно', 'волнуюсь'],
+            'удивление': ['удивлен', 'неожиданно', 'вау', 'ого', '😮'],
+            'спокойствие': ['спокоен', 'умиротворен', 'расслаблен', '😌']
         }
         
         for emotion, keywords in emotion_keywords.items():
             if any(keyword in content_lower for keyword in keywords):
                 emotions.append(emotion)
         
-        return emotions if emotions else ['нейтральное']
+        return emotions
     
-    async def _search_memories(self, query: str, context: MemoryContext, limit: int = 5) -> List[Dict[str, Any]]:
-        """Поиск релевантных воспоминаний"""
-        if not query:
-            # Если запроса нет, возвращаем последние важные
-            recent_memories = [m for m in self.memories if m['importance_score'] > 0.5]
-            return sorted(recent_memories, key=lambda x: x['timestamp'], reverse=True)[:limit]
-        
-        # Простой поиск по ключевым словам (в будущем заменить на векторный)
-        query_words = query.lower().split()
-        scored_memories = []
-        
-        for memory in self.memories:
-            score = 0
-            content_lower = memory['content'].lower()
+    def get_user_profile(self) -> Dict[str, Any]:
+        """Получить профиль пользователя из векторной БД"""
+        try:
+            if not self._ensure_tables():
+                return {}
             
-            # Поиск по содержанию
-            for word in query_words:
-                if word in content_lower:
-                    score += 1
-            
-            # Поиск по темам
-            for topic in memory.get('topics', []):
-                if any(word in topic for word in query_words):
-                    score += 2
-            
-            # Бонус за важность
-            score += memory['importance_score']
-            
-            if score > 0:
-                memory_with_score = memory.copy()
-                memory_with_score['search_score'] = score
-                scored_memories.append(memory_with_score)
-        
-        # Сортируем по релевантности
-        scored_memories.sort(key=lambda x: x['search_score'], reverse=True)
-        return scored_memories[:limit]
-    
-    async def get_user_profile(self) -> Dict[str, Any]:
-        """Получить профиль пользователя на основе памяти"""
-        if not self.memories:
+            conn = self._get_db_conn()
+            if not conn:
+                return {}
+                
+            with conn.cursor() as cursor:
+                # Базовая статистика
+                cursor.execute(
+                    "SELECT COUNT(*) FROM vector_memories WHERE user_id = %s",
+                    (self.user_id,)
+                )
+                total_count = cursor.fetchone()[0]
+                
+                if total_count == 0:
+                    return {}
+                
+                # Анализ тем
+                cursor.execute("""
+                    SELECT topics FROM vector_memories 
+                    WHERE user_id = %s AND topics IS NOT NULL
+                """, (self.user_id,))
+                topics_result = cursor.fetchall()
+                
+                all_topics = []
+                for row in topics_result:
+                    if row['topics']:
+                        all_topics.extend(row['topics'])
+                
+                topic_counts = {}
+                for topic in all_topics:
+                    topic_counts[topic] = topic_counts.get(topic, 0) + 1
+                
+                # Эмоциональный профиль
+                cursor.execute("""
+                    SELECT emotions FROM vector_memories 
+                    WHERE user_id = %s AND emotions IS NOT NULL
+                """, (self.user_id,))
+                emotions_result = cursor.fetchall()
+                
+                all_emotions = []
+                for row in emotions_result:
+                    if row[0]:  # emotions
+                        all_emotions.extend(row[0])
+                
+                emotion_counts = {}
+                for emotion in all_emotions:
+                    emotion_counts[emotion] = emotion_counts.get(emotion, 0) + 1
+                
+                # Персональная информация
+                cursor.execute("""
+                    SELECT content FROM vector_memories 
+                    WHERE user_id = %s AND importance_score > 0.7
+                    ORDER BY importance_score DESC
+                    LIMIT 10
+                """, (self.user_id,))
+                personal_memories = cursor.fetchall()
+                
+                profile = {
+                    'user_id': self.user_id,
+                    'total_messages': total_count,
+                    'favorite_topics': sorted(topic_counts.items(), key=lambda x: x[1], reverse=True)[:5],
+                    'emotional_profile': emotion_counts,
+                    'personal_info': {
+                        'has_name': any('меня зовут' in m['content'].lower() for m in personal_memories),
+                        'has_profession': any('я работаю' in m['content'].lower() for m in personal_memories),
+                        'details_shared': len(personal_memories)
+                    }
+                }
+                
+                return profile
+                
+        except Exception as e:
+            print(f"❌ Ошибка получения профиля: {e}")
             return {}
-        
-        profile = {
-            'user_id': self.user_id,
-            'total_messages': len(self.memories),
-            'communication_days': len(set(m['day_number'] for m in self.memories)),
-            'favorite_topics': [],
-            'emotional_profile': {},
-            'personal_info': {},
-            'preferences': {}
-        }
-        
-        # Анализ тем
-        all_topics = []
-        for memory in self.memories:
-            all_topics.extend(memory.get('topics', []))
-        
-        if all_topics:
-            topic_counts = {}
-            for topic in all_topics:
-                topic_counts[topic] = topic_counts.get(topic, 0) + 1
-            
-            profile['favorite_topics'] = sorted(topic_counts.items(), 
-                                              key=lambda x: x[1], reverse=True)[:3]
-        
-        # Эмоциональный профиль
-        all_emotions = []
-        for memory in self.memories:
-            all_emotions.extend(memory.get('emotions', []))
-        
-        if all_emotions:
-            emotion_counts = {}
-            for emotion in all_emotions:
-                emotion_counts[emotion] = emotion_counts.get(emotion, 0) + 1
-            
-            profile['emotional_profile'] = emotion_counts
-        
-        # Извлечение персональной информации
-        personal_memories = [m for m in self.memories if 'меня зовут' in m['content'].lower() 
-                           or 'я работаю' in m['content'].lower()]
-        
-        if personal_memories:
-            profile['personal_info'] = {
-                'has_name': any('меня зовут' in m['content'].lower() for m in personal_memories),
-                'has_profession': any('я работаю' in m['content'].lower() for m in personal_memories),
-                'details_shared': len(personal_memories)
-            }
-        
-        return profile
     
-    async def search_memory(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    def search_memory(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """Поиск в памяти по запросу"""
         context = MemoryContext(user_id=self.user_id)
-        return await self._search_memories(query, context, limit)
+        return self._search_memories(query, context, limit)
     
-    async def summarize_conversation(self, messages: List[Message]) -> str:
+    def summarize_conversation(self, messages: List[Message]) -> str:
         """Суммаризация разговора"""
         if not messages:
             return "Разговор пуст."
         
-        # Простая суммаризация - берем ключевые моменты
-        user_messages = [msg for msg in messages if msg.role == 'user']
-        
-        if len(user_messages) <= 3:
-            return f"Краткий разговор из {len(user_messages)} сообщений."
-        
-        # Анализируем темы и эмоции
-        all_content = ' '.join([msg.content for msg in user_messages])
-        topics = await self._extract_topics(all_content)
-        emotions = await self._detect_emotions(all_content)
-        
-        summary_parts = [f"Разговор из {len(user_messages)} сообщений"]
-        
-        if topics:
-            summary_parts.append(f"Основные темы: {', '.join(topics[:3])}")
-        
-        if emotions and emotions[0] != 'нейтральное':
-            summary_parts.append(f"Эмоциональный тон: {emotions[0]}")
-        
-        return ". ".join(summary_parts) + "."
+        try:
+            # Используем векторную БД для суммаризации
+            if not self._ensure_tables():
+                return f"Разговор из {len(messages)} сообщений."
+            
+            conn = self._get_db_conn()
+            if not conn:
+                return f"Разговор из {len(messages)} сообщений."
+                
+            with conn.cursor() as cursor:
+                # Получаем важные воспоминания пользователя
+                cursor.execute("""
+                    SELECT content, topics, emotions
+                    FROM vector_memories 
+                    WHERE user_id = %s AND importance_score > 0.6
+                    ORDER BY importance_score DESC
+                    LIMIT 5
+                """, (self.user_id,))
+                important_memories = cursor.fetchall()
+                
+                if not important_memories:
+                    return f"Разговор из {len(messages)} сообщений."
+                
+                # Анализируем темы и эмоции
+                all_topics = []
+                all_emotions = []
+                
+                for memory in important_memories:
+                    if memory['topics']:
+                        all_topics.extend(memory['topics'])
+                    if memory['emotions']:
+                        all_emotions.extend(memory['emotions'])
+                
+                # Подсчитываем частоту
+                topic_counts = {}
+                for topic in all_topics:
+                    topic_counts[topic] = topic_counts.get(topic, 0) + 1
+                
+                emotion_counts = {}
+                for emotion in all_emotions:
+                    emotion_counts[emotion] = emotion_counts.get(emotion, 0) + 1
+                
+                # Формируем суммаризацию
+                summary_parts = [f"Разговор из {len(messages)} сообщений"]
+                
+                if topic_counts:
+                    top_topics = sorted(topic_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+                    summary_parts.append(f"Основные темы: {', '.join([topic for topic, _ in top_topics])}")
+                
+                if emotion_counts:
+                    top_emotions = sorted(emotion_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+                    summary_parts.append(f"Преобладающие эмоции: {', '.join([emotion for emotion, _ in top_emotions])}")
+                
+                return ". ".join(summary_parts)
+                
+        except Exception as e:
+            print(f"❌ Ошибка суммаризации: {e}")
+            return f"Разговор из {len(messages)} сообщений."
     
-    async def clear_memory(self) -> None:
+    def clear_memory(self) -> None:
         """Очистить память пользователя"""
-        self.memories.clear()
-        self.embeddings_cache.clear() 
+        try:
+            if not self._ensure_tables():
+                return
+                
+            conn = self._get_db_conn()
+            if not conn:
+                return
+                
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM vector_memories WHERE user_id = %s",
+                    (self.user_id,)
+                )
+                conn.commit()
+                print(f"🧠 VectorMemory: Память пользователя {self.user_id} очищена")
+                
+        except Exception as e:
+            print(f"❌ Ошибка очистки памяти: {e}")
+    
+    def close(self):
+        """Закрыть соединения с БД"""
+        if hasattr(self, '_db_conn') and self._db_conn and not self._db_conn.closed:
+            self._db_conn.close() 

@@ -3,39 +3,3 @@ config.env
 .env
 .env.local
 .env.production
-
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-
-# Logs
-*.log
-server_*.log
-logs/
-
-# Database
-*.db
-*.sqlite3
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Temporary files
-*.tmp
-*.temp
-tmp/
-temp/
-
-# Test outputs
-test_output/
-output/

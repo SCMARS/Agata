@@ -21,7 +21,7 @@ def test_mode(mode_name, quiet_flag):
         # Запускаем сервер в фоне
         server_process = subprocess.Popen([
             'python', 'run_server.py'
-        ], env=env, cwd='/Users/glebuhovskij/Desktop/Agata',
+        ], env=env, cwd=os.path.dirname(os.path.abspath(__file__)),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         # Ждем запуска

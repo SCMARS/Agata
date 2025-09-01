@@ -18,7 +18,7 @@ def get_pipeline():
     global _pipeline
     if _pipeline is None:
         try:
-            from graph.pipeline import AgathaPipeline
+            from app.graph.pipeline import AgathaPipeline
             _pipeline = AgathaPipeline()
         except Exception as e:
             raise e
@@ -74,6 +74,12 @@ def create_app():
                 'health': '/healthz',
                 'readiness': '/readyz',
                 'chat': '/api/chat',
+                'memory': {
+                    'add': '/api/memory/<user_id>/add',
+                    'search': '/api/memory/<user_id>/search', 
+                    'overview': '/api/memory/<user_id>/overview',
+                    'clear': '/api/memory/<user_id>/clear'
+                },
                 'swagger': '/api/docs'
             }
         })
@@ -88,6 +94,10 @@ def create_app():
             user_id = data.get('user_id')
             messages = data.get('messages', [])
             meta_time = data.get('metaTime')
+            
+            # Преобразуем messages в правильный формат если нужно
+            if messages and isinstance(messages[0], str):
+                messages = [{'role': 'user', 'content': msg} for msg in messages]
 
             if not user_id:
                 return json_response({'error': 'user_id is required'}), 400
@@ -109,6 +119,153 @@ def create_app():
 
         except Exception as e:
             return json_response({'error': str(e), 'type': type(e).__name__}), 500
+
+    # Memory Management Endpoints
+    @app.route('/api/memory/<user_id>/add', methods=['POST'])
+    def add_to_memory(user_id):
+        """Добавляет сообщение в память пользователя"""
+        try:
+            data = request.get_json()
+            if not data:
+                return json_response({'error': 'No data provided'}), 400
+
+            role = data.get('role')
+            content = data.get('content')
+            metadata = data.get('metadata', {})
+
+            if not role or not content:
+                return json_response({'error': 'role and content are required'}), 400
+
+            # Импортируем систему памяти
+            from app.memory.memory_levels import MemoryLevelsManager
+            from app.memory.base import Message, MemoryContext
+            from datetime import datetime
+
+            # Создаем менеджер памяти
+            memory_manager = MemoryLevelsManager(user_id)
+            
+            # Создаем сообщение и контекст
+            message = Message(
+                role=role,
+                content=content,
+                timestamp=datetime.now(),
+                metadata=metadata
+            )
+            
+            context = MemoryContext(
+                user_id=user_id,
+                conversation_id=data.get('conversation_id'),
+                day_number=data.get('day_number', 1)
+            )
+
+            # Добавляем в память
+            result = memory_manager.add_message(message, context)
+
+            return json_response({
+                'success': True,
+                'message': 'Added to memory',
+                'result': result,
+                'user_id': user_id
+            })
+
+        except Exception as e:
+            return json_response({'error': str(e), 'type': type(e).__name__}, 500)
+
+    @app.route('/api/memory/<user_id>/search', methods=['POST'])
+    def search_memory(user_id):
+        """Ищет в памяти пользователя"""
+        try:
+            data = request.get_json()
+            if not data:
+                return json_response({'error': 'No data provided'}), 400
+
+            query = data.get('query')
+            max_results = data.get('max_results', 5)
+            levels = data.get('levels')  # список уровней для поиска
+
+            if not query:
+                return json_response({'error': 'query is required'}), 400
+
+            # Импортируем систему памяти
+            from app.memory.memory_levels import MemoryLevelsManager, MemoryLevel
+            
+            memory_manager = MemoryLevelsManager(user_id)
+            
+            # Конвертируем строки в enum если нужно
+            if levels:
+                level_enums = []
+                for level_str in levels:
+                    try:
+                        level_enums.append(MemoryLevel(level_str))
+                    except ValueError:
+                        pass
+                levels = level_enums if level_enums else None
+
+            # Выполняем поиск
+            results = memory_manager.search_memory(query, levels=levels, max_results=max_results)
+            
+            # Конвертируем результаты в JSON-совместимый формат
+            serializable_results = []
+            for result in results:
+                serializable_results.append({
+                    'content': result.content,
+                    'source_level': result.source_level.value,
+                    'relevance_score': result.relevance_score,
+                    'metadata': result.metadata,
+                    'created_at': result.created_at.isoformat() if result.created_at else None
+                })
+
+            return json_response({
+                'success': True,
+                'query': query,
+                'results': serializable_results,
+                'total_found': len(serializable_results),
+                'user_id': user_id
+            })
+
+        except Exception as e:
+            return json_response({'error': str(e), 'type': type(e).__name__}, 500)
+
+    @app.route('/api/memory/<user_id>/overview', methods=['GET'])
+    def get_memory_overview(user_id):
+        """Получает обзор памяти пользователя"""
+        try:
+            from app.memory.memory_levels import MemoryLevelsManager
+            
+            memory_manager = MemoryLevelsManager(user_id)
+            overview = memory_manager.get_memory_overview()
+            
+            return json_response({
+                'success': True,
+                'user_id': user_id,
+                'overview': overview
+            })
+
+        except Exception as e:
+            return json_response({'error': str(e), 'type': type(e).__name__}, 500)
+
+    @app.route('/api/memory/<user_id>/clear', methods=['POST'])
+    def clear_memory(user_id):
+        """Очищает память пользователя"""
+        try:
+            from app.memory.memory_levels import MemoryLevelsManager
+            
+            memory_manager = MemoryLevelsManager(user_id)
+            
+            # Очищаем все уровни памяти
+            if memory_manager.short_term:
+                memory_manager.short_term.clear()
+            if memory_manager.long_term:
+                memory_manager.long_term.clear()
+            
+            return json_response({
+                'success': True,
+                'message': 'Memory cleared',
+                'user_id': user_id
+            })
+
+        except Exception as e:
+            return json_response({'error': str(e), 'type': type(e).__name__}, 500)
 
     @app.errorhandler(404)
     def not_found(error):

@@ -21,7 +21,7 @@ def run_with_mode(mode_name, env_vars):
         # Запускаем сервер в фоне
         server_process = subprocess.Popen([
             'python', 'run_server.py'
-        ], env=env, cwd='/Users/glebuhovskij/Desktop/Agata',
+        ], env=env, cwd=os.path.dirname(os.path.abspath(__file__)),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         # Ждем запуска сервера
@@ -30,7 +30,7 @@ def run_with_mode(mode_name, env_vars):
         # Запускаем тестовый запрос
         test_process = subprocess.run([
             'python', 'test_response.py'
-        ], env=env, cwd='/Users/glebuhovskij/Desktop/Agata',
+        ], env=env, cwd=os.path.dirname(os.path.abspath(__file__)),
         capture_output=True, text=True, timeout=30)
 
         print("📝 ВЫВОД СЕРВЕРА:")

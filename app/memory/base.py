@@ -1,6 +1,13 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from enum import Enum
+
+class MessageRole(Enum):
+    """Роли сообщений"""
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
 
 class Message:
     """Message model - простая версия без pydantic"""

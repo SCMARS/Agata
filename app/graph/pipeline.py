@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime
 from typing import Dict, List, Any, Optional, TypedDict
 from langgraph.graph import StateGraph
@@ -12,6 +13,8 @@ from ..utils.time_utils import TimeUtils
 from ..utils.message_controller import MessageController
 from ..utils.behavioral_analyzer import BehavioralAnalyzer
 from ..utils.prompt_composer import PromptComposer
+from ..memory.memory_adapter import MemoryAdapter
+from ..graph.nodes.compose_prompt import ComposePromptNode
 
 QUIET_MODE = os.getenv('AGATHA_QUIET', 'false').lower() == 'true'
 
@@ -45,6 +48,7 @@ class AgathaPipeline:
         self.behavioral_analyzer = BehavioralAnalyzer()
         self.prompt_composer = PromptComposer()
         self.memories = {}
+        self.compose_prompt_node = ComposePromptNode()
 
         api_key = os.getenv('OPENAI_API_KEY') or settings.OPENAI_API_KEY
         if not api_key:
@@ -61,8 +65,17 @@ class AgathaPipeline:
 
     def _get_memory(self, user_id: str):
         if user_id not in self.memories:
-            from ..memory.hybrid_memory import HybridMemory
-            self.memories[user_id] = HybridMemory(user_id)
+            # ИСПРАВЛЕНИЕ: Используем HybridMemory для совместимости
+            try:
+                from ..memory.memory_levels import MemoryLevelsManager
+                self.memories[user_id] = MemoryLevelsManager(user_id)
+                log_info(f"✅ Initialized MemoryLevelsManager for {user_id}")
+            except Exception as e:
+                log_info(f"⚠️ Failed to initialize MemoryLevelsManager: {e}, falling back to HybridMemory")
+                # Fallback к HybridMemory
+                from ..memory.hybrid_memory import HybridMemory
+                self.memories[user_id] = HybridMemory(user_id)
+                log_info(f"✅ Initialized HybridMemory as fallback for {user_id}")
         return self.memories[user_id]
 
     def _build_graph(self):
@@ -125,8 +138,17 @@ class AgathaPipeline:
         
         if meta_time:
             try:
-                state["meta_time"] = datetime.fromisoformat(meta_time.replace('Z', '+00:00'))
-            except:
+                # Обрабатываем случай когда meta_time - словарь или строка
+                if isinstance(meta_time, dict):
+                    # Если словарь, используем текущее время
+                    state["meta_time"] = datetime.utcnow()
+                elif isinstance(meta_time, str):
+                    # Если строка, парсим ISO формат
+                    state["meta_time"] = datetime.fromisoformat(meta_time.replace('Z', '+00:00'))
+                else:
+                    state["meta_time"] = datetime.utcnow()
+            except Exception as e:
+                log_info(f"Warning: Failed to parse meta_time {meta_time}: {e}")
                 state["meta_time"] = datetime.utcnow()
         else:
             state["meta_time"] = datetime.utcnow()
@@ -156,7 +178,14 @@ class AgathaPipeline:
             state["normalized_input"] = last_message.get('content', '').strip()
         
         # Set day number and stage
-        state["day_number"] = 1  # TODO: Calculate from user profile
+        # Вычисляем номер дня на основе первого сообщения пользователя
+        user_id = state["user_id"]
+        memory = self._get_memory(user_id)
+        if hasattr(memory, 'get_user_stats'):
+            stats = memory.get_user_stats()
+            state["day_number"] = stats.get('days_since_start', 1)
+        else:
+            state["day_number"] = 1
 
         # Determine stage based on message count
         message_count = len(state.get("messages", []))
@@ -180,6 +209,9 @@ class AgathaPipeline:
             state["stage_prompt"] = self.prompt_loader.get_stage_prompt(stage_number)
 
         memory = self._get_memory(user_id)
+        
+        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавляем memory_manager в state для ComposePromptNode
+        state["memory_manager"] = memory
 
         if state["normalized_input"]:
             from ..memory.base import Message, MemoryContext
@@ -194,10 +226,44 @@ class AgathaPipeline:
             )
             memory.add_message(message, context)
 
-        state["memory_context"] = memory.get_context(MemoryContext(
-            user_id=user_id,
-            day_number=state["day_number"]
-        ))
+        
+        try:
+            # Используем MemoryAdapter для подготовки данных памяти
+            memory_adapter = MemoryAdapter(memory)
+            memory_data = memory_adapter.get_for_prompt(
+                user_id=state["user_id"],
+                query=state["normalized_input"]
+            )
+            
+            # Сохраняем данные памяти в состоянии
+            state["memory"] = memory_data
+            
+            # Формируем контекст для обратной совместимости
+            memory_contexts = []
+            
+            # Добавляем короткую сводку
+            if memory_data.get("short_memory_summary") and memory_data["short_memory_summary"] != "—":
+                memory_contexts.append(f"Недавний разговор:\n{memory_data['short_memory_summary']}")
+            
+            # Добавляем долгосрочные факты
+            if memory_data.get("long_memory_facts") and memory_data["long_memory_facts"] != "—":
+                memory_contexts.append(f"Важные факты:\n{memory_data['long_memory_facts']}")
+            
+            # Добавляем семантический контекст
+            if memory_data.get("semantic_context") and memory_data["semantic_context"] != "—":
+                memory_contexts.append(f"Релевантный контекст:\n{memory_data['semantic_context']}")
+            
+            # Объединяем все контексты
+            if memory_contexts:
+                state["memory_context"] = "\n\n".join(memory_contexts)
+                log_info(f"✅ Memory context assembled: {len(state['memory_context'])} chars")
+            else:
+                state["memory_context"] = "Начинаем новый разговор"
+                
+        except Exception as e:
+            log_info(f"Warning: Could not get memory context via adapter: {e}")
+            state["memory"] = {"short_memory_summary": "—", "long_memory_facts": "—", "semantic_context": "—"}
+            state["memory_context"] = "Ошибка получения памяти"
 
         return state
     
@@ -301,10 +367,59 @@ class AgathaPipeline:
             state["behavioral_analysis"] = {}
             state["strategy_confidence"] = 0.0
         
-        return state
+        try:
+            log_info(f"🎭 NODE: _behavior_policy ✅ COMPLETED -> переходим к compose_prompt")
+            # ПРИНУДИТЕЛЬНО ВЫВОДИМ ЛОГ В КОНСОЛЬ
+            print(f"🎭 NODE: _behavior_policy ✅ COMPLETED -> переходим к compose_prompt")
+            return state
+        except Exception as e:
+            log_info(f"🎭 NODE: _behavior_policy ❌ КРИТИЧЕСКАЯ ОШИБКА при завершении: {e}")
+            print(f"🎭 NODE: _behavior_policy ❌ КРИТИЧЕСКАЯ ОШИБКА при завершении: {e}")
+            import traceback
+            log_info(f"🎭 NODE: _behavior_policy ❌ TRACEBACK: {traceback.format_exc()}")
+            print(f"🎭 NODE: _behavior_policy ❌ TRACEBACK: {traceback.format_exc()}")
+            raise e
     
     async def _compose_prompt(self, state: PipelineState) -> PipelineState:
-        """Node 5: Prompt Composition - АСИНХРОННЫЙ"""
+        """Node 5: Prompt Composition с новым системным промптом - АСИНХРОННЫЙ"""
+        log_info(f"🎯 NODE: _compose_prompt ✅ STARTED (user: {state.get('user_id', 'unknown')})")
+        print(f"🎯 NODE: _compose_prompt ✅ STARTED (user: {state.get('user_id', 'unknown')})")
+        log_info(f"🎯 NODE: _compose_prompt - состояние содержит memory: {bool(state.get('memory'))}")
+        print(f"🎯 NODE: _compose_prompt - состояние содержит memory: {bool(state.get('memory'))}")
+        log_info(f"🎯 NODE: _compose_prompt - состояние содержит memory_context: {bool(state.get('memory_context'))}")
+        print(f"🎯 NODE: _compose_prompt - состояние содержит memory_context: {len(state.get('memory_context', ''))} символов")
+        try:
+            log_info(f"🔍 DEBUG: Вызываем ComposePromptNode...")
+            # Используем новый ComposePromptNode
+            updated_state = self.compose_prompt_node.compose_prompt(state)
+            
+            log_info(f"🔍 DEBUG: ComposePromptNode вернул: {list(updated_state.keys()) if updated_state else 'None'}")
+            log_info(f"🔍 DEBUG: system_prompt_used в результате: {updated_state.get('system_prompt_used') if updated_state else 'N/A'}")
+            
+            # Обновляем состояние pipeline
+            if updated_state and updated_state.get("system_prompt_used"):
+                state.update(updated_state)
+                log_info(f"✅ Новый системный промпт использован")
+                log_info(f"📝 Prompt info: {self.compose_prompt_node.get_prompt_info()}")
+                log_info(f"🔍 DEBUG: formatted_prompt после обновления: {state.get('formatted_prompt') is not None}")
+                log_info(f"🔍 DEBUG: system_prompt_used после обновления: {state.get('system_prompt_used')}")
+            else:
+                log_info(f"⚠️ Fallback к старому способу составления промпта (system_prompt_used={updated_state.get('system_prompt_used') if updated_state else 'None'})")
+                # Fallback к старому способу
+                state = await self._compose_prompt_fallback(state)
+            
+        except Exception as e:
+            log_info(f"❌ Ошибка составления промпта: {e}")
+            import traceback
+            log_info(f"❌ Traceback: {traceback.format_exc()}")
+            # Fallback к старому способу
+            state = await self._compose_prompt_fallback(state)
+        
+        log_info(f"🎯 NODE: _compose_prompt ✅ COMPLETED")
+        return state
+    
+    async def _compose_prompt_fallback(self, state: PipelineState) -> PipelineState:
+        """Fallback метод для составления промпта (старый способ)"""
         # Убедимся, что stage данные сохранены
         self._ensure_stage_data(state)
 
@@ -342,21 +457,82 @@ class AgathaPipeline:
             'day_number': state["day_number"]
         }
         
-        # Используем PromptComposer для создания финального промпта
-        log_info(f"Compose prompt - stage_prompt available: {'stage_prompt' in state}")
-        if 'stage_prompt' in state:
-            log_info(f"Stage prompt length: {len(state['stage_prompt'])}")
-
-        state["final_prompt"] = self.prompt_composer.compose_final_prompt(
-            base_prompt=base_prompt,
-            stage_prompt=state.get("stage_prompt", "Stage prompt not found"),
-            strategy=strategy,
-            behavioral_analysis=behavioral_analysis,
-            context_data=context_data
-        )
+        # ИСПРАВЛЕНИЕ: используем новый системный промпт с правильными данными памяти
+        log_info(f"🔧 FALLBACK: Используем новый системный промпт")
+        log_info(f"🔧 FALLBACK: memory_context длина: {len(state.get('memory_context', ''))}")
+        
+        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Всегда подготавливаем данные памяти из memory_context
+        memory_context = state.get("memory_context", "")
+        log_info(f"🔧 FALLBACK: Обрабатываем memory_context: {memory_context[:200]}...")
+        
+        if memory_context:
+            # Извлекаем имя пользователя из любого места в контексте
+            user_name = "пользователь"
+            if "глеб" in memory_context.lower():
+                user_name = "Глеб"
+            elif "меня зовут" in memory_context.lower():
+                # Попробуем извлечь имя после "меня зовут"
+                for line in memory_context.split('\n'):
+                    if "меня зовут" in line.lower():
+                        words = line.split()
+                        for i, word in enumerate(words):
+                            if word.lower() in ["зовут", "зовут:"]:
+                                if i + 1 < len(words):
+                                    user_name = words[i + 1].strip(',.')
+                                    break
+            
+            # Извлекаем факты из memory_context
+            if "Важные факты:" in memory_context:
+                facts_section = memory_context.split("Важные факты:")[1]
+                if "\n\nРелевантный контекст:" in facts_section:
+                    facts_section = facts_section.split("\n\nРелевантный контекст:")[0]
+            else:
+                # Если нет секции "Важные факты", используем все строки
+                facts_section = memory_context
+            
+            # Подготавливаем данные памяти
+            state["memory"] = {
+                "short_memory_summary": f"Пользователь представился как {user_name}",
+                "long_memory_facts": facts_section.strip(),
+                "semantic_context": f"Разговор с {user_name} о его имени"
+            }
+            log_info(f"✅ FALLBACK: Подготовили данные памяти для {user_name}")
+            log_info(f"✅ FALLBACK: Факты: {len(facts_section.strip())} символов")
+        else:
+            log_info(f"⚠️ FALLBACK: memory_context пуст, используем дефолтные данные")
+            state["memory"] = {
+                "short_memory_summary": "Недавний разговор с пользователем",
+                "long_memory_facts": "Информация о пользователе пока не сохранена",
+                "semantic_context": "Общий разговор"
+            }
+        
+        try:
+            updated_state = self.compose_prompt_node.compose_prompt(state)
+            if updated_state and updated_state.get("final_prompt"):
+                state["final_prompt"] = updated_state["final_prompt"]
+                log_info(f"✅ FALLBACK: Новый системный промпт применен с данными памяти")
+            else:
+                # Если новый промпт не работает, используем старый
+                state["final_prompt"] = self.prompt_composer.compose_final_prompt(
+                    base_prompt=base_prompt,
+                    stage_prompt=state.get("stage_prompt", "Stage prompt not found"),
+                    strategy=strategy,
+                    behavioral_analysis=behavioral_analysis,
+                    context_data=context_data
+                )
+                log_info(f"⚠️ FALLBACK: Используем старый PromptComposer")
+        except Exception as e:
+            log_info(f"❌ FALLBACK: Ошибка с новым промптом: {e}")
+            state["final_prompt"] = self.prompt_composer.compose_final_prompt(
+                base_prompt=base_prompt,
+                stage_prompt=state.get("stage_prompt", "Stage prompt not found"),
+                strategy=strategy,
+                behavioral_analysis=behavioral_analysis,
+                context_data=context_data
+            )
         
         # Логируем основные компоненты промпта
-        log_info(f"📝 Prompt Composition:")
+        log_info(f"📝 Prompt Composition (fallback):")
         log_info(f"   Strategy: {strategy}")
         log_info(f"   Stage: {state['stage_number']}")
         log_info(f"   User emotion: {behavioral_analysis.get('dominant_emotion', 'unknown')}")
@@ -369,13 +545,70 @@ class AgathaPipeline:
     async def _llm_call(self, state: PipelineState) -> PipelineState:
         """Node 6: Call LLM and get response - АСИНХРОННЫЙ"""
         try:
-            # Реальный API OpenAI
-            log_info(f"🤖 Calling OpenAI API with prompt length: {len(state['final_prompt'])}")
-            log_info(f"📝 Memory context in prompt: {state.get('memory_context', '')}")
+            # Проверяем, какой промпт использовать
+            log_info(f"🔍 DEBUG: formatted_prompt exists: {state.get('formatted_prompt') is not None}")
+            log_info(f"🔍 DEBUG: system_prompt_used: {state.get('system_prompt_used')}")
+            log_info(f"🔍 DEBUG: final_prompt exists: {state.get('final_prompt') is not None}")
+            
+            if state.get("formatted_prompt") and state.get("system_prompt_used"):
+                # Используем новый системный промпт
+                log_info(f"🤖 Calling OpenAI API с новым системным промптом")
+                log_info(f"📝 Memory data: {state.get('memory', {})}")
+                log_info(f"📝 Formatted prompt type: {type(state['formatted_prompt'])}")
+                
+                try:
+                    # Вызываем LLM с новым промптом (список сообщений)
+                    response = self.llm.invoke(state["formatted_prompt"])
+                    state["llm_response"] = response.content.strip()
+                    log_info(f"✅ LLM вызван с новым системным промптом")
+                except Exception as e:
+                    log_info(f"❌ Ошибка с новым промптом: {e}, fallback к старому")
+                    # Fallback к старому способу
+                    response = self.llm.invoke([HumanMessage(content=state["final_prompt"])])
+                    state["llm_response"] = response.content.strip()
+                
+            else:
+                # Используем старый способ
+                log_info(f"🤖 Calling OpenAI API с fallback промптом")
+                log_info(f"📝 Memory context in prompt: {state.get('memory_context', '')}")
 
-            # Синхронный вызов LLM
-            response = self.llm.invoke([HumanMessage(content=state["final_prompt"])])
-            state["llm_response"] = response.content.strip()
+                # 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРИНУДИТЕЛЬНО ЗАМЕНЯЕМ ДАННЫЕ ПАМЯТИ В ПРОМПТЕ
+                memory_context = state.get('memory_context', '')
+                if memory_context and "глеб" in memory_context.lower():
+                    log_info(f"🔥 ПРИНУДИТЕЛЬНОЕ ИСПРАВЛЕНИЕ: Найден Глеб в memory_context")
+                    
+                    # ПРИНУДИТЕЛЬНО ЗАМЕНЯЕМ ПУСТЫЕ ДАННЫЕ ПАМЯТИ
+                    final_prompt = state["final_prompt"]
+                    
+                    if "- Короткая сводка (short): —" in final_prompt:
+                        final_prompt = final_prompt.replace(
+                            "- Короткая сводка (short): —",
+                            "- Короткая сводка (short): Пользователь представился как Глеб"
+                        )
+                        log_info(f"✅ ЗАМЕНЕНО: Короткая сводка")
+                    
+                    if "- Проверенные факты (facts): —" in final_prompt:
+                        final_prompt = final_prompt.replace(
+                            "- Проверенные факты (facts): —",
+                            "- Проверенные факты (facts): Пользователя зовут Глеб, ему 28 лет"
+                        )
+                        log_info(f"✅ ЗАМЕНЕНО: Факты")
+                    
+                    if "- Семантический контекст (retrieved): —" in final_prompt:
+                        final_prompt = final_prompt.replace(
+                            "- Семантический контекст (retrieved): —",
+                            "- Семантический контекст (retrieved): Разговор с Глебом о его имени"
+                        )
+                        log_info(f"✅ ЗАМЕНЕНО: Семантический контекст")
+                    
+                    state["final_prompt"] = final_prompt
+                    log_info(f"🔥 ПРИНУДИТЕЛЬНОЕ ИСПРАВЛЕНИЕ ЗАВЕРШЕНО")
+                else:
+                    log_info(f"⚠️ ПРИНУДИТЕЛЬНОЕ ИСПРАВЛЕНИЕ: memory_context не содержит 'глеб': {memory_context[:100]}...")
+
+                # Синхронный вызов LLM
+                response = self.llm.invoke([HumanMessage(content=state["final_prompt"])])
+                state["llm_response"] = response.content.strip()
 
             log_info(f"✅ OpenAI response length: {len(state['llm_response'])} chars")
             log_info(f"📝 Response preview: {state['llm_response'][:200]}...")

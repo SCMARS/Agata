@@ -1,19 +1,44 @@
-"""
-Hybrid Memory Adapter - объединяет кратковременную и долгосрочную память
-"""
+
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from .base import MemoryAdapter, Message, MemoryContext
-from .buffer_memory import BufferMemory
+from .enhanced_buffer_memory import EnhancedBufferMemory
 from .vector_memory import VectorMemory
+from .langchain_memory import LangChainMemory
 
 class HybridMemory(MemoryAdapter):
  
     
     def __init__(self, user_id: str, short_memory_size: int = 15, long_memory_size: int = 1000):
         self.user_id = user_id
-        self.short_memory = BufferMemory(user_id, max_messages=short_memory_size)
-        self.long_memory = VectorMemory(user_id, max_memories=long_memory_size)
+        
+        # Получаем настройки
+        try:
+            from ..config.settings import settings
+            memory_type = getattr(settings, 'LONG_MEMORY_TYPE', 'intelligent')
+        except ImportError:
+            # Fallback конфигурация
+            memory_type = 'intelligent'
+            
+        # Используем новые улучшенные системы памяти
+        self.short_memory = EnhancedBufferMemory(user_id, max_messages=short_memory_size)
+        
+        # Выбираем тип долгосрочной памяти на основе конфигурации
+        if memory_type == 'intelligent':
+            try:
+                self.long_memory = LangChainMemory(user_id, max_memories=long_memory_size)
+                self.is_intelligent = True
+                print(f"🧠 HybridMemory: Using LangChain Memory for {user_id}")
+            except Exception as e:
+                print(f"⚠️ Failed to initialize LangChain Memory: {e}")
+                print(f"🧠 HybridMemory: Falling back to VectorMemory for {user_id}")
+                self.long_memory = VectorMemory(user_id, max_memories=long_memory_size)
+                self.is_intelligent = False
+        else:
+            # Fallback к обычной векторной памяти
+            self.long_memory = VectorMemory(user_id, max_memories=long_memory_size)
+            self.is_intelligent = False
+            print(f"🧠 HybridMemory: Using VectorMemory for {user_id}")
         
         # Счетчики для аналитики
         self.total_messages = 0
@@ -35,7 +60,12 @@ class HybridMemory(MemoryAdapter):
         short_context = self.short_memory.get_context(context)
         
         # Получаем контекст из долгосрочной памяти
-        long_context = self.long_memory.get_context(context, query)
+        if self.is_intelligent and query:
+            # Используем умный поиск для интеллектуальной памяти
+            long_context = self.long_memory.get_context_with_search(query, context)
+        else:
+            # Стандартный режим
+            long_context = self.long_memory.get_context(context, query)
         
         # Создаем статистику общения
         days_communicating = (datetime.utcnow() - self.conversation_start).days + 1
@@ -278,6 +308,43 @@ class HybridMemory(MemoryAdapter):
         """Поиск в памяти - делегируем долгосрочной памяти"""
         return self.long_memory.search_memory(query, limit)
     
+    def generate_intelligent_answer(self, question: str) -> Dict[str, Any]:
+        """
+        Генерировать умный ответ с контекстом (только для интеллектуальной памяти)
+        
+        Args:
+            question: Вопрос пользователя
+            
+        Returns:
+            Dict: Ответ с метаданными или ошибка если не поддерживается
+        """
+        if self.is_intelligent and hasattr(self.long_memory, 'generate_answer_with_context'):
+            return self.long_memory.generate_answer_with_context(question)
+        else:
+            return {
+                "question": question,
+                "answer": "Интеллектуальная генерация ответов не поддерживается в текущей конфигурации памяти.",
+                "context_found": False,
+                "error": "intelligent_memory_not_available"
+            }
+    
+    def add_document_to_memory(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """
+        Добавить документ в долгосрочную память (только для интеллектуальной памяти)
+        
+        Args:
+            content: Содержание документа
+            metadata: Метаданные документа
+            
+        Returns:
+            str: ID документа или None если не поддерживается
+        """
+        if self.is_intelligent and hasattr(self.long_memory, 'add_document'):
+            return self.long_memory.add_document(content, metadata)
+        else:
+            print("⚠️ Document storage not supported in current memory configuration")
+            return None
+    
     def summarize_conversation(self, messages: List[Message]) -> str:
         """Суммаризация разговора - делегируем долгосрочной памяти"""
         return self.long_memory.summarize_conversation(messages)
@@ -287,4 +354,14 @@ class HybridMemory(MemoryAdapter):
         self.short_memory.clear_memory()
         self.long_memory.clear_memory()
         self.total_messages = 0
-        self.conversation_start = datetime.utcnow() 
+        self.conversation_start = datetime.utcnow()
+    
+    def get_user_stats(self) -> Dict[str, Any]:
+        """Получить статистику пользователя (совместимость с MemoryLevelsManager)"""
+        days_since_start = (datetime.utcnow() - self.conversation_start).days + 1
+        return {
+            'days_since_start': days_since_start,
+            'total_messages': self.total_messages,
+            'conversation_start': self.conversation_start,
+            'activity_level': self._calculate_activity_level()
+        } 

@@ -1,353 +1,496 @@
 # 🤖 Agatha AI Companion
 
-**Advanced Conversational AI with Behavioral Adaptation & Long-term Memory**
+**Продвинутый AI-компаньон с поведенческой адаптацией и долгосрочной памятью**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2.50-green.svg)](https://github.com/langchain-ai/langgraph)
 [![OpenAI GPT-4](https://img.shields.io/badge/OpenAI-GPT--4-orange.svg)](https://openai.com/)
 [![Flask](https://img.shields.io/badge/Flask-3.0+-red.svg)](https://flask.palletsprojects.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## 📋 Overview
+## 📋 Обзор
 
-Agatha is a sophisticated AI companion built with **LangGraph** that provides personalized, context-aware conversations with advanced behavioral adaptation. The system features intelligent memory management, emotional analysis, and day-based conversation scenarios for long-term relationship building.
+Agatha — это продвинутый AI-компаньон, построенный на базе **LangGraph** и **LangChain**, который обеспечивает персонализированные, контекстно-зависимые разговоры с развитой поведенческой адаптацией. Система включает интеллектуальное управление памятью, эмоциональный анализ и многоуровневую архитектуру памяти для построения долгосрочных отношений.
 
-### 🎯 Key Features
+### 🎯 Ключевые особенности
 
-- **🧠 Intelligent Memory System**: Hybrid memory architecture combining short-term buffer and long-term vector storage
-- **🎭 Behavioral Adaptation**: Dynamic personality adjustment based on user emotions and conversation patterns  
-- **📅 Day-based Scenarios**: 30+ conversation scenarios that evolve relationship dynamics over time
-- **⚡ LangGraph Pipeline**: 8-node processing pipeline for sophisticated conversation flow
-- **🔍 Smart Message Control**: Automatic message splitting, question frequency management, and response delays
-- **⏰ Time-aware Context**: Contextual responses based on time of day and conversation history
-- **🚀 Production Ready**: Flask + Gunicorn setup with health checks and OpenAPI documentation
+- **🧠 4-уровневая система памяти**: Short-Term, Episodic, Long-Term, Summary с семантическим поиском
+- **🎭 Поведенческая адаптация**: Динамическая настройка персональности на основе эмоций и паттернов разговора
+- **📅 Дневные сценарии**: 30+ сценариев разговора, которые развивают динамику отношений со временем
+- **⚡ LangGraph Pipeline**: 8-узловый конвейер обработки для сложного потока разговора
+- **🔍 Умное управление сообщениями**: Автоматическое разделение сообщений, управление частотой вопросов
+- **⏰ Контекст времени**: Контекстные ответы на основе времени дня и истории разговора
+- **🚀 Готов к продакшену**: Flask + Gunicorn с проверками здоровья и OpenAPI документацией
+- **🎛️ Без хардкода**: Полностью конфигурируемая система через YAML файлы и базу данных
 
-## 🏗️ Architecture
+## 🏗️ Архитектура
+
+### Схема системы памяти
 
 ```mermaid
 graph TD
-    A[User Input] --> B[LangGraph Pipeline]
-    B --> C[Input Normalization]
-    C --> D[Memory Retrieval]
-    D --> E[Day Policy]
-    E --> F[Behavioral Analysis]
-    F --> G[Prompt Composition]
-    G --> H[LLM Call]
-    H --> I[Response Processing]
-    I --> J[Memory Persistence]
-    J --> K[Final Response]
+    A[Пользователь] --> B[LangGraph Pipeline]
+    B --> C[Нормализация ввода]
+    C --> D[Короткая память]
+    D --> E[Дневная политика]
+    E --> F[Поведенческий анализ]
+    F --> G[Композиция промпта]
+    G --> H[LLM вызов]
+    H --> I[Обработка ответа]
+    I --> J[Сохранение в память]
+    J --> K[Финальный ответ]
     
-    L[HybridMemory] --> M[BufferMemory]
-    L --> N[VectorMemory]
+    subgraph "4-уровневая память"
+        L[Short-Term<br/>Буфер 15 сообщений]
+        M[Episodic<br/>Эпизоды диалогов]
+        N[Long-Term<br/>Векторная БД]
+        O[Summary<br/>Резюме]
+    end
+    
     D --> L
     J --> L
+    J --> M
+    J --> N
+    J --> O
 ```
 
-### 🔧 Core Components
+### Компоненты системы
 
-| Component | Description | Status |
-|-----------|-------------|--------|
-| **LangGraph Pipeline** | 8-node conversation processing flow | ✅ 100% |
-| **HybridMemory** | Dual-layer memory (Buffer + Vector) | ✅ 95% |
-| **BehavioralAnalyzer** | Emotion detection & strategy selection | ✅ 85% |
-| **PromptComposer** | Dynamic prompt generation | ✅ 100% |
-| **MessageController** | Response formatting & question control | ✅ 90% |
-| **TimeUtils** | Time-aware contextual responses | ✅ 80% |
+- **EnhancedBufferMemory**: Умная короткая память с определением эмоций и важности
+- **IntelligentVectorMemory**: Векторная память с ChromaDB для семантического поиска
+- **MemoryLevelsManager**: Координатор всех уровней памяти
+- **ProductionConfigManager**: Динамический менеджер конфигурации без хардкода
+- **PromptComposer**: Композитор промптов с поддержкой курсора диалога
 
-## 🚀 Quick Start
+## 🚀 Быстрый старт
 
-### Prerequisites
+### Системные требования
 
-- Python 3.11+
-- OpenAI API key
-- Redis (optional, for production)
-- PostgreSQL (optional, for production)
+- **Python**: 3.11 или выше
+- **OpenAI API Key**: для GPT-4 и text-embedding-ada-002
+- **PostgreSQL**: 13+ (опционально, для продакшена)
+- **Redis**: 6+ (опционально, для Celery)
 
-### Installation
+### 1. Клонирование и настройка
 
-1. **Clone the repository**
 ```bash
-git clone https://github.com/your-username/agatha-ai-companion.git
-cd agatha-ai-companion
-```
+# Клонируем репозиторий
+git clone https://github.com/your-username/agatha-ai.git
+cd agatha-ai
 
-2. **Create virtual environment**
-```bash
+# Создаем виртуальное окружение
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
+source venv/bin/activate  # Linux/macOS
+# или
+venv\Scripts\activate     # Windows
 
-3. **Install dependencies**
-```bash
+# Устанавливаем зависимости
 pip install -r requirements.txt
 ```
 
-4. **Set environment variables**
+### 2. Настройка переменных окружения
+
+Создайте файл `.env` в корне проекта:
+
 ```bash
-export OPENAI_API_KEY="your-openai-api-key"
-export FLASK_ENV="development"  # or "production"
+# OpenAI Configuration
+OPENAI_API_KEY=sk-your-openai-api-key-here
+
+# Flask Configuration
+FLASK_ENV=development
+FLASK_DEBUG=true
+FLASK_PORT=5000
+
+# Database Configuration (опционально)
+DATABASE_URL=postgresql://user:password@localhost:5432/agatha
+REDIS_URL=redis://localhost:6379/0
+
+# Memory Configuration
+MEMORY_TYPE=intelligent  # или 'simple' для fallback
+VECTOR_DB_PATH=./data/chroma_db
+
+# Telegram Bot (опционально)
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 ```
 
-5. **Run the server**
+### 3. Инициализация базы данных (опционально)
+
+Для продакшена с PostgreSQL:
+
 ```bash
+# Запуск PostgreSQL
+./start_local_db.sh
+
+# Или вручную через Docker
+docker run --name agatha-postgres -e POSTGRES_PASSWORD=password -p 5432:5432 -d postgres:13
+
+# Выполнение миграций
+python -c "
+from app.database.migrations import run_migrations
+run_migrations()
+"
+```
+
+### 4. Запуск проекта
+
+#### Режим разработки
+
+```bash
+# Простой запуск Flask сервера
 python run_server.py
+
+# Или с автоперезагрузкой
+FLASK_DEBUG=true python run_server.py
 ```
 
-The server will start on `http://localhost:8000`
-
-### 🔥 Quick Test
+#### Продакшн режим
 
 ```bash
-curl -X POST http://localhost:8000/api/chat \
+# С Gunicorn
+gunicorn -w 4 -b 0.0.0.0:5000 run_server:app
+
+# С Celery для фоновых задач
+celery -A app.workers.celery_app worker --loglevel=info &
+```
+
+#### Telegram Bot
+
+```bash
+# Запуск Telegram бота
+python run_telegram_bot.py
+```
+
+### 5. Проверка работы
+
+```bash
+# Проверка здоровья API
+curl http://localhost:5000/healthz
+
+# Тестовый запрос к API
+curl -X POST http://localhost:5000/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "user_id": "test_user",
-    "messages": [{"role": "user", "content": "Hello! My name is Alex."}],
-    "metaTime": "2024-01-15T14:30:00Z"
+    "message": "Привет, меня зовут Александр!",
+    "user_id": "test_user"
   }'
 ```
 
-## 📡 API Reference
+Ожидаемый ответ:
+```json
+{
+  "response": "Привет, Александр! Рада познакомиться! 😊",
+  "conversation_state": "active",
+  "emotions_detected": ["happy"],
+  "memory_stats": {
+    "buffer_size": 2,
+    "cursor_position": 1
+  }
+}
+```
+
+## 📊 API Документация
 
 ### Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/healthz` | GET | Health check |
-| `/api/info` | GET | API information |
-| `/api/chat` | POST | Main chat endpoint |
+#### `POST /chat` - Основной чат
 
-### Chat API
-
-**POST** `/api/chat`
-
-**Request Body:**
 ```json
 {
-  "user_id": "string",
-  "messages": [
-    {
-      "role": "user|assistant", 
-      "content": "string"
+  "message": "Текст сообщения",
+  "user_id": "идентификатор_пользователя",
+  "metadata": {
+    "day_number": 1,
+    "time_context": "morning"
+  }
+}
+```
+
+**Ответ:**
+```json
+{
+  "response": "Ответ AI",
+  "conversation_state": "active",
+  "emotions_detected": ["happy", "grateful"],
+  "topics_detected": ["работа", "хобби"],
+  "memory_stats": {
+    "buffer_size": 5,
+    "cursor_position": 4,
+    "importance_score": 0.8
+  },
+  "behavior_tag": "care"
+}
+```
+
+#### `GET /memory/{user_id}` - Состояние памяти
+
+```json
+{
+  "levels": {
+    "short_term": {
+      "status": "active",
+      "buffer_size": 5,
+      "cursor_position": 4
+    },
+    "long_term": {
+      "status": "active", 
+      "total_documents": 127,
+      "avg_importance": 0.7
+    },
+    "episodic": {
+      "total_episodes": 3,
+      "recent_episodes": 1
+    },
+    "summary": {
+      "total_summaries": 8
     }
-  ],
-  "metaTime": "2024-01-15T14:30:00Z"
+  }
 }
 ```
 
-**Response:**
+#### `GET /healthz` - Проверка здоровья
+
 ```json
 {
-  "parts": ["Response part 1", "Response part 2"],
-  "has_question": true,
-  "delays_ms": [1500, 2000]
+  "status": "healthy",
+  "components": {
+    "memory_system": "ok",
+    "llm_connection": "ok",
+    "database": "ok"
+  }
 }
 ```
 
-## 🧠 Memory System
+## 🧪 Тестирование
 
-Agatha uses a sophisticated **HybridMemory** system:
-
-### Short-term Memory (BufferMemory)
-- Stores recent 15 messages
-- Immediate context for ongoing conversations
-- Fast retrieval for current session
-
-### Long-term Memory (VectorMemory)
-- Semantic storage of important information
-- 7-category importance analysis:
-  - Personal information (name, age, location)
-  - Interests and hobbies
-  - Emotions and experiences
-  - Plans and goals
-  - Relationships and social connections
-  - Important events
-  - Memory-related questions
-
-### Memory Scoring System
-```python
-# Example importance scores
-"My name is John, I'm 25" → 1.4 points ✅ (saved)
-"I work as an engineer" → 1.4 points ✅ (saved)  
-"I have a cat named Fluffy" → 0.4 points ❌ (not saved)
-"I love photography" → 1.0 points ✅ (saved)
-"Do you remember my name?" → 3.7 points ✅ (high priority)
-```
-
-## 🎭 Behavioral Adaptation
-
-The system analyzes user behavior and adapts conversation style:
-
-### Conversation Strategies
-- **Caring**: Supportive and empathetic responses
-- **Playful**: Light-hearted and engaging interactions  
-- **Mysterious**: Intriguing and thought-provoking dialogue
-- **Reserved**: Calm and measured communication
-
-### Emotion Detection
-- Real-time sentiment analysis
-- Emotional intensity measurement
-- Communication style adaptation
-- Response tone adjustment
-
-## 📅 Day-based Scenarios
-
-Agatha evolves the relationship through 30+ day scenarios:
-
-- **Day 1**: First meeting - cautious and curious
-- **Day 7**: Building trust - more personal sharing
-- **Day 14**: Deeper connection - emotional support
-- **Day 30**: Close companionship - intimate conversations
-
-## ⚙️ Configuration
-
-### Environment Variables
+### Базовые тесты
 
 ```bash
-# Required
-OPENAI_API_KEY=your-openai-api-key
-
-# Optional
-FLASK_ENV=development
-FLASK_DEBUG=true
-MAX_MESSAGE_LENGTH=500
-QUESTION_FREQUENCY=3
-MEMORY_BUFFER_SIZE=15
-MEMORY_VECTOR_SIZE=1000
-```
-
-### Settings
-
-Key configuration options in `app/config/settings.py`:
-
-```python
-MAX_MESSAGE_LENGTH = 500      # Max characters per message part
-QUESTION_FREQUENCY = 3        # Ask questions every N messages  
-MEMORY_BUFFER_SIZE = 15       # Short-term memory size
-MEMORY_VECTOR_SIZE = 1000     # Long-term memory capacity
-```
-
-## 🧪 Testing
-
-Run the comprehensive test suite:
-
-```bash
-# Basic functionality test
+# Тест системы памяти
 python -c "
-import requests
-response = requests.post('http://localhost:8000/api/chat', 
-  json={'user_id': 'test', 'messages': [{'role': 'user', 'content': 'Hello!'}]})
-print(response.json())
+from app.memory import EnhancedBufferMemory, create_short_memory
+from app.memory.base import Message, MemoryContext
+from datetime import datetime
+
+# Тест короткой памяти
+memory = create_short_memory('test_user', max_messages=5)
+memory.add_message('user', 'Привет! Меня зовут Тест 😊')
+print(f'Эмоции: {memory.get_emotions_detected()}')
+print(f'Курсор: {memory.get_current_cursor_position()}')
+print('✅ Тест пройден!')
 "
 
-# Memory system test  
+# Тест конфигурации
 python -c "
-from app.memory.hybrid_memory import HybridMemory
-memory = HybridMemory('test_user')
-print('Memory system initialized successfully')
+from app.config.production_config_manager import get_config
+config = get_config('enhanced_memory_config')
+print(f'Эмоции в конфиге: {list(config.get(\"emotion_markers\", {}).keys())}')
+print('✅ Конфигурация загружена!')
 "
 ```
 
-## 🔧 Development
+### Интеграционные тесты
 
-### Project Structure
-
-```
-agatha-ai-companion/
-├── app/
-│   ├── __init__.py
-│   ├── api/                 # Flask API endpoints
-│   ├── config/             # Configuration & prompts
-│   │   └── prompts/        # Day scenarios & base prompts
-│   ├── graph/              # LangGraph pipeline
-│   ├── memory/             # Memory system
-│   ├── utils/              # Utilities & analyzers
-│   └── workers/            # Celery workers (future)
-├── requirements.txt
-├── run_server.py           # Development server
-└── README.md
+```bash
+# Полный тест пайплайна
+python quick_test.py
 ```
 
-### Adding New Features
+## ⚙️ Конфигурация
 
-1. **New Memory Categories**: Extend `_is_important_message()` in `VectorMemory`
-2. **Behavioral Strategies**: Add strategies in `BehavioralAnalyzer`  
-3. **Day Scenarios**: Create new prompt files in `app/config/prompts/`
-4. **Pipeline Nodes**: Extend the LangGraph pipeline in `AgathaPipeline`
+### Структура конфигурации
 
-## 🚀 Production Deployment
+```
+app/config/
+├── enhanced_memory_config.yml    # Конфигурация памяти и эмоций
+├── prompt_composer_config.yml    # Настройки композитора промптов  
+├── system_defaults.yml           # Системные настройки по умолчанию
+└── prompts/                      # Промпты для разных дней
+    ├── base_prompt.txt
+    ├── day_1.txt
+    ├── day_7.txt
+    └── day_30.txt
+```
 
-### Docker Setup (Recommended)
+### Основные настройки
+
+#### `enhanced_memory_config.yml`
+```yaml
+# Маркеры эмоций (без хардкода!)
+emotion_markers:
+  happy: ["спасибо", "отлично", "😊", "круто"]
+  sad: ["грустно", "печально", "😢"]
+  
+# Расчет важности сообщений
+importance_calculation:
+  role_weights:
+    user: 0.7
+    assistant: 0.5
+  importance_markers:
+    critical:
+      markers: ["важно", "срочно", "критично"]
+      weight: 0.3
+
+# Ключевые слова для тем
+topic_keywords:
+  работа: ["работ", "профессия", "карьер"]
+  семья: ["семья", "родители", "дети"]
+```
+
+#### `system_defaults.yml`
+```yaml
+system:
+  limits:
+    max_message_length: 4096
+    buffer_size: 15
+  thresholds:
+    memory:
+      importance_threshold: 0.6
+      similarity_threshold: 0.7
+```
+
+## 🔌 Расширения
+
+### Добавление новых эмоций
+
+1. Отредактируйте `app/config/enhanced_memory_config.yml`:
+```yaml
+emotion_markers:
+  excited: ["ура", "супер", "восторг", "🎉"]
+```
+
+2. Добавьте в `app/memory/enhanced_buffer_memory.py`:
+```python
+class EmotionTag(Enum):
+    EXCITED = "excited"  # Новая эмоция
+```
+
+### Добавление новых тем
+
+```yaml
+topic_keywords:
+  спорт: ["спорт", "тренировка", "фитнес", "бег"]
+  музыка: ["музыка", "песня", "концерт", "группа"]
+```
+
+### Кастомные поведенческие стратегии
+
+Создайте новый промпт в `app/config/prompts/`:
+```txt
+# custom_behavior.txt
+Ты дружелюбный и энергичный AI-помощник...
+```
+
+## 🐳 Docker
 
 ```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-COPY . .
-EXPOSE 8000
-
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "run_server:app"]
+# Dockerfile уже готов в проекте
+docker build -t agatha-ai .
+docker run -p 5000:5000 -e OPENAI_API_KEY=your-key agatha-ai
 ```
 
-### Environment Setup
+## 📱 Telegram Bot
+
+### Настройка
+
+1. Создайте бота через [@BotFather](https://t.me/botfather)
+2. Добавьте токен в `.env`:
+```bash
+TELEGRAM_BOT_TOKEN=123456789:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+```
+3. Запустите бота:
+```bash
+python run_telegram_bot.py
+```
+
+### Команды бота
+
+- `/start` - Начать разговор
+- `/memory` - Показать состояние памяти
+- `/reset` - Очистить память
+- `/stats` - Статистика диалога
+
+## 🛠️ Разработка
+
+### Структура проекта
+
+```
+agatha-ai/
+├── app/
+│   ├── api/              # Flask API endpoints
+│   ├── bots/             # Telegram bot
+│   ├── config/           # Конфигурационные файлы
+│   ├── database/         # Миграции БД
+│   ├── graph/            # LangGraph pipeline
+│   ├── memory/           # Система памяти
+│   ├── utils/            # Утилиты
+│   └── workers/          # Celery задачи
+├── tests/                # Тесты
+├── data/                 # Данные (ChromaDB, логи)
+├── requirements.txt      # Зависимости
+└── run_server.py         # Точка входа
+```
+
+### Добавление новых узлов в LangGraph
+
+```python
+# app/graph/pipeline.py
+def new_processing_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Новый узел обработки"""
+    # Ваша логика здесь
+    return state
+
+# Добавление в граф
+workflow.add_node("new_node", new_processing_node)
+workflow.add_edge("previous_node", "new_node")
+```
+
+## 🔍 Мониторинг и логирование
+
+### Логи
 
 ```bash
-# Production environment
-export FLASK_ENV=production
-export OPENAI_API_KEY=your-production-key
-export REDIS_URL=redis://localhost:6379
-export DATABASE_URL=postgresql://user:pass@localhost/agatha
+# Просмотр логов
+tail -f logs/agatha.log
+
+# Логи по уровням
+grep "ERROR" logs/agatha.log
+grep "INFO" logs/agatha.log
 ```
 
-## 📊 Performance
+### Метрики памяти
 
-### Benchmarks
+```python
+from app.memory import create_memory_levels_manager
 
-- **Response Time**: ~2-4 seconds (including OpenAI API)
-- **Memory Efficiency**: Hybrid system reduces storage by 60%
-- **Conversation Quality**: 89% user satisfaction in testing
-- **System Reliability**: 99.5% uptime in production
+manager = create_memory_levels_manager('user_id')
+overview = manager.get_memory_overview()
+print(overview)
+```
 
-### Scaling Considerations
+## ❗ Известные проблемы
 
-- **Horizontal Scaling**: Stateless design supports multiple instances
-- **Memory Optimization**: Vector storage with semantic search
-- **Caching**: Redis integration for session management
-- **Database**: PostgreSQL for persistent conversation storage
+1. **SQLAlchemy конфликт**: Используйте Python 3.11, избегайте 3.13
+2. **OpenAI API лимиты**: Настройте rate limiting в продакшене
+3. **ChromaDB пространство**: Периодически очищайте старые векторы
 
-## 🤝 Contributing
+## 🤝 Участие в разработке
 
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md).
+1. Форкните проект
+2. Создайте feature branch (`git checkout -b feature/amazing-feature`)
+3. Коммитьте изменения (`git commit -m 'Add amazing feature'`)
+4. Пушьте в branch (`git push origin feature/amazing-feature`)
+5. Создайте Pull Request
 
-### Development Setup
+## 📄 Лицензия
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Make your changes and add tests
-4. Commit: `git commit -m 'Add amazing feature'`
-5. Push: `git push origin feature/amazing-feature`
-6. Open a Pull Request
+Проект распространяется под лицензией MIT. См. файл `LICENSE` для подробностей.
 
-## 📄 License
+## 🙏 Благодарности
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **LangGraph** for the conversation pipeline framework
-- **OpenAI** for GPT-4 language model
-- **LangChain** for AI application building blocks
-- **Flask** for the web framework
-
-## 📞 Support
-
-- **Documentation**: [Wiki](https://github.com/your-username/agatha-ai-companion/wiki)
-- **Issues**: [GitHub Issues](https://github.com/your-username/agatha-ai-companion/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-username/agatha-ai-companion/discussions)
+- [LangChain](https://github.com/langchain-ai/langchain) за мощную LLM инфраструктуру
+- [LangGraph](https://github.com/langchain-ai/langgraph) за граф-ориентированные рабочие процессы
+- [ChromaDB](https://github.com/chroma-core/chroma) за векторную базу данных
+- [OpenAI](https://openai.com/) за GPT-4 и embeddings
 
 ---
 
-**Built with ❤️ for meaningful AI conversations** 
+**💡 Совет**: Начните с простого сценария, добавьте несколько сообщений и изучите, как система запоминает контекст и адаптирует поведение. Agatha становится умнее с каждым разговором!

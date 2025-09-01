@@ -83,21 +83,28 @@ def async_pipeline_wrapper(pipeline, user_id, messages, meta_time):
         loop.close()
 
 def create_app():
-    """Application factory"""
-    app = Flask(__name__)
-    
-    # Enable CORS
-    CORS(app)
-    
-    # Health check endpoints
-    @app.route('/healthz')
-    def health_check():
-        """Basic health check endpoint"""
-        return jsonify({
-            'status': 'healthy',
-            'timestamp': datetime.utcnow().isoformat(),
-            'service': 'agatha-api'
-        }), 200
+    """Application factory - используем обновленный main.py"""
+    try:
+        # Импортируем обновленный app из main.py
+        from app.api.main import create_app as create_main_app
+        print("✅ Используем обновленный API с памятью")
+        return create_main_app()
+    except Exception as e:
+        print(f"⚠️ Fallback к базовому API: {e}")
+        
+        # Fallback к базовому app
+        app = Flask(__name__)
+        CORS(app)
+        
+        # Health check endpoints
+        @app.route('/healthz')
+        def health_check():
+            """Basic health check endpoint"""
+            return jsonify({
+                'status': 'healthy',
+                'timestamp': datetime.utcnow().isoformat(),
+                'service': 'agatha-api'
+            }), 200
     
     @app.route('/readyz')
     def readiness_check():
@@ -135,6 +142,10 @@ def create_app():
                 'health': '/healthz',
                 'readiness': '/readyz',
                 'chat': '/api/chat',
+                'memory_add': '/api/memory/<user_id>/add',
+                'memory_search': '/api/memory/<user_id>/search',
+                'memory_overview': '/api/memory/<user_id>/overview',
+                'memory_clear': '/api/memory/<user_id>/clear',
                 'swagger': '/api/docs'
             }
         })
@@ -184,6 +195,151 @@ def create_app():
                 'debug': str(e),
                 'type': type(e).__name__
             }), 500
+
+    # Memory endpoints
+    @app.route('/api/memory/<user_id>/add', methods=['POST'])
+    def add_to_memory(user_id):
+        """Добавляет сообщение в память пользователя"""
+        try:
+            from app.memory.memory_levels import MemoryLevelsManager
+            from app.memory.base import Message, MemoryContext
+            
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'JSON data is required'}), 400
+                
+            content = data.get('content')
+            if not content:
+                return jsonify({'error': 'content is required'}), 400
+            
+            role = data.get('role', 'user')
+            metadata = data.get('metadata', {})
+            conversation_id = data.get('conversation_id', 'default')
+            day_number = data.get('day_number', 1)
+            
+            # Создаем сообщение и контекст
+            message = Message(
+                content=content,
+                role=role,
+                metadata=metadata
+            )
+            
+            context = MemoryContext(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                day_number=day_number
+            )
+            
+            # Добавляем в память
+            memory_manager = MemoryLevelsManager(user_id)
+            result = memory_manager.add_message(message, context)
+            
+            return jsonify({
+                'success': True,
+                'message': 'Added to memory',
+                'result': result,
+                'user_id': user_id
+            })
+            
+        except Exception as e:
+            return jsonify({'error': str(e), 'type': type(e).__name__}), 500
+
+    @app.route('/api/memory/<user_id>/search', methods=['POST'])
+    def search_memory(user_id):
+        """Поиск в памяти пользователя"""
+        try:
+            from app.memory.memory_levels import MemoryLevelsManager
+            from app.memory.base import MemoryLevel
+            
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'JSON data is required'}), 400
+                
+            query = data.get('query')
+            if not query:
+                return jsonify({'error': 'query is required'}), 400
+            
+            level = data.get('level', 'all')
+            max_results = data.get('limit', 10)
+            
+            # Конвертируем уровень в enum если указан
+            levels = None
+            if level and level != 'all':
+                level_enums = []
+                if isinstance(level, list):
+                    for l in level:
+                        try:
+                            level_enums.append(MemoryLevel(l))
+                        except ValueError:
+                            pass
+                else:
+                    try:
+                        level_enums.append(MemoryLevel(level))
+                    except ValueError:
+                        pass
+                levels = level_enums if level_enums else None
+
+            # Выполняем поиск
+            memory_manager = MemoryLevelsManager(user_id)
+            results = memory_manager.search_memory(query, levels=levels, max_results=max_results)
+            
+            # Конвертируем результаты в JSON-совместимый формат
+            serializable_results = []
+            for result in results:
+                serializable_results.append({
+                    'content': result.content,
+                    'source_level': result.source_level.value,
+                    'relevance_score': result.relevance_score,
+                    'metadata': result.metadata,
+                    'created_at': result.created_at.isoformat() if result.created_at else None
+                })
+
+            return jsonify({
+                'success': True,
+                'query': query,
+                'results': serializable_results,
+                'total_found': len(serializable_results),
+                'user_id': user_id
+            })
+
+        except Exception as e:
+            return jsonify({'error': str(e), 'type': type(e).__name__}), 500
+
+    @app.route('/api/memory/<user_id>/overview', methods=['GET'])
+    def get_memory_overview(user_id):
+        """Получает обзор памяти пользователя"""
+        try:
+            from app.memory.memory_levels import MemoryLevelsManager
+            
+            memory_manager = MemoryLevelsManager(user_id)
+            overview = memory_manager.get_memory_overview()
+            
+            return jsonify({
+                'success': True,
+                'user_id': user_id,
+                'overview': overview
+            })
+
+        except Exception as e:
+            return jsonify({'error': str(e), 'type': type(e).__name__}), 500
+
+    @app.route('/api/memory/<user_id>/clear', methods=['POST'])
+    def clear_memory(user_id):
+        """Очищает память пользователя"""
+        try:
+            from app.memory.memory_levels import MemoryLevelsManager
+            
+            memory_manager = MemoryLevelsManager(user_id)
+            memory_manager.clear_all_memory()
+            
+            return jsonify({
+                'success': True,
+                'message': 'Memory cleared',
+                'user_id': user_id
+            })
+
+        except Exception as e:
+            return jsonify({'error': str(e), 'type': type(e).__name__}), 500
     
     # Error handlers
     @app.errorhandler(404)
@@ -210,8 +366,10 @@ if __name__ == '__main__':
     print("   - API Info: http://localhost:8000/api/info")
     print("   - Chat: POST http://localhost:8000/api/chat")
     
+    # Используем настройки из settings
+    from app.config.settings import settings
     app.run(
-        host='0.0.0.0',
-        port=8000,
-        debug=False
+        host=settings.HOST,
+        port=settings.PORT,
+        debug=settings.DEBUG
     ) 

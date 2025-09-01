@@ -20,7 +20,7 @@ def run_test(env_var, mode_name):
         # Запускаем сервер
         server_process = subprocess.Popen([
             'python', 'run_server.py'
-        ], env=env, cwd='/Users/glebuhovskij/Desktop/Agata',
+        ], env=env, cwd=os.path.dirname(os.path.abspath(__file__)),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         time.sleep(5)
@@ -30,7 +30,7 @@ def run_test(env_var, mode_name):
             'curl', '-s', '-X', 'POST', 'http://localhost:8000/api/chat',
             '-H', 'Content-Type: application/json',
             '-d', '{"user_id": "demo", "messages": [{"role": "user", "content": "Привет"}], "metaTime": "2024-01-15T14:30:00Z"}'
-        ], capture_output=True, text=True, cwd='/Users/glebuhovskij/Desktop/Agata')
+        ], capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(__file__)))
 
         # Останавливаем сервер
         server_process.terminate()

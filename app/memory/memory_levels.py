@@ -26,10 +26,10 @@ except ImportError:
 
 class MemoryLevel(Enum):
     """Уровни памяти в системе"""
-    SHORT_TERM = "short_term"      # Буфер последних сообщений
-    EPISODIC = "episodic"          # Завершенные диалоги/сессии
-    LONG_TERM = "long_term"        # Факты о пользователе, векторная БД
-    SUMMARY = "summary"            # Резюме длинных диалогов
+    SHORT_TERM = "short_term"      
+    EPISODIC = "episodic"          
+    LONG_TERM = "long_term"        
+    SUMMARY = "summary"           
 
 
 @dataclass
@@ -174,22 +174,23 @@ class MemoryLevelsManager:
                 print(f"❌ [MEMORY-{context.user_id}] Краткосрочная память не инициализирована!")
                 results['short_term'] = False
             
-            # 2. Long-Term Memory (только важные сообщения)
-            print(f"🗄️ [MEMORY-{context.user_id}] Проверяем долгосрочную память...")
+            # 2. ИСПРАВЛЕНО: АВТОМАТИЧЕСКИ переносим ВСЕ сообщения в векторную БД
+            print(f"🗄️ [MEMORY-{context.user_id}] АВТОМАТИЧЕСКИЙ перенос в векторную БД...")
             if self.long_term:
-                min_importance = self.config.get('long_term', {}).get('min_importance', 0.6)
-                print(f"📊 [MEMORY-{context.user_id}] Минимальная важность для долгосрочной памяти: {min_importance}")
+                # Снижаем порог важности - сохраняем почти все сообщения
+                min_importance = self.config.get('long_term', {}).get('min_importance', 0.1)
+                print(f"📊 [MEMORY-{context.user_id}] Низкий порог важности для векторной БД: {min_importance}")
+                
                 added_to_long_term = self.long_term.add_message_to_memory(
                     message, context, min_importance
                 )
                 results['long_term'] = added_to_long_term
                 if added_to_long_term:
-                    print(f"✅ [MEMORY-{context.user_id}] Добавлено в долгосрочную память")
-                    self.logger.debug("Message added to long-term memory")
+                    print(f"✅ [MEMORY-{context.user_id}] Сохранено в векторную БД")
                 else:
-                    print(f"❌ [MEMORY-{context.user_id}] НЕ добавлено в долгосрочную память")
+                    print(f"⚠️ [MEMORY-{context.user_id}] НЕ сохранено в векторную БД")
             else:
-                print(f"❌ [MEMORY-{context.user_id}] Долгосрочная память не инициализирована!")
+                print(f"❌ [MEMORY-{context.user_id}] Векторная БД не инициализирована!")
                 results['long_term'] = False
             
             # 3. Проверяем необходимость создания эпизода
@@ -542,19 +543,15 @@ class MemoryLevelsManager:
         """Извлекает ключевые факты из сообщений"""
         facts = []
         
-        # Простое извлечение фактов по ключевым словам
-        fact_markers = ['меня зовут', 'я работаю', 'живу в', 'мне лет']
+ 
+        has_personal_info = any(pronoun in content.lower() for pronoun in ['я ', 'мне ', 'мой ', 'моя ', 'меня '])
         
         for msg in messages:
             content = msg.get('text', '').lower()
-            for marker in fact_markers:
-                if marker in content:
-                    # Извлекаем предложение с фактом
-                    sentences = content.split('.')
-                    for sentence in sentences:
-                        if marker in sentence:
-                            facts.append(sentence.strip())
-                            break
+            # Проверяем наличие личной информации через местоимения
+            if any(pronoun in content for pronoun in ['я ', 'мне ', 'мой ', 'моя ', 'меня ']):
+                if len(content) > 10:  # Фильтруем слишком короткие сообщения
+                    facts.append(msg.get('text', ''))
         
         return facts
     
@@ -620,11 +617,11 @@ class MemoryLevelsManager:
                 return {
                     'name': 'Test User',
                     'age': 25,
-                    'interests': ['programming', 'travel'],
+                    'interests': [],
                     'recent_mood': 'neutral',
                     'activity_level': 'moderate',
                     'relationship_stage': 'introduction',
-                    'favorite_topics': ['programming', 'travel'],
+                    'favorite_topics': [],
                     'communication_style': 'casual'
                 }
         except Exception as e:
@@ -638,7 +635,7 @@ class MemoryLevelsManager:
             return {
                 'relationship_stage': 'introduction',
                 'communication_patterns': {'style': 'casual', 'frequency': 'regular'},
-                'suggested_topics': ['programming', 'travel'],
+                'suggested_topics': [],
                 'emotional_journey': {'current_mood': 'neutral', 'trend': 'stable'},
                 'personalization_level': 0.5,
                 'recent_mood': 'neutral',

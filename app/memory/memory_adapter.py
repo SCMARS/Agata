@@ -4,15 +4,98 @@ Memory Adapter - адаптер для подготовки данных пам�
 from typing import Dict, Optional, List
 from datetime import datetime
 import logging
+import yaml
+import os
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import time
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryAdapter:
-    """Адаптер для подготовки данных памяти для промпта"""
+    """Адаптер для унификации работы с разными типами памяти"""
     
-    def __init__(self, memory_manager):
+    def __init__(self, memory_manager, config=None):
         self.memory_manager = memory_manager
+        self.logger = logging.getLogger(__name__)
+        
+        # Загружаем конфигурацию
+        self.config = self._load_config(config)
+        self.max_facts = self.config.get('max_facts', 50)
+        self.max_short_messages = self.config.get('max_short_messages', 20)
+        self.max_semantic_results = self.config.get('max_semantic_results', 8)
+        self.facts_search_multiplier = self.config.get('facts_search_multiplier', 4)
+        self.search_queries = self.config.get('search_queries', {
+            'personal_info': 'личная информация пользователь предпочтения интересы семья работа учеба',
+            'general_context': 'контекст диалог разговор общение'
+        })
+        self.content_limits = self.config.get('content_limits', {
+            'short_message_length': 100,
+            'min_fact_length': 10,
+            'min_document_length': 20,
+            'log_preview_length': 50,
+            'fact_log_preview_length': 30
+        })
+        # Убираем хардкод - доверяем векторному поиску
+        # self.personal_keywords больше не используется
+        
+        # Добавляем кэш и пул потоков для производительности
+        self._cache = {}
+        self._cache_ttl = 60  # 60 секунд кэша
+        self._executor = ThreadPoolExecutor(max_workers=2)  # Ограничиваем количество потоков
+    
+    def _load_config(self, config=None):
+        """Загружает конфигурацию из файла или переданных параметров"""
+        if config:
+            return config
+            
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'memory_adapter_config.yml')
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    full_config = yaml.safe_load(f)
+                    return full_config.get('memory_adapter', {})
+        except Exception as e:
+            self.logger.warning(f"Не удалось загрузить конфигурацию: {e}")
+            
+        return {}
+    
+    def _get_cache_key(self, user_id: str, operation: str, params: str = "") -> str:
+        """Генерирует ключ кэша"""
+        return f"{user_id}:{operation}:{hash(params)}"
+    
+    def _get_cached_result(self, cache_key: str) -> Optional[str]:
+        """Получает результат из кэша"""
+        if cache_key in self._cache:
+            result, timestamp = self._cache[cache_key]
+            if time.time() - timestamp < self._cache_ttl:
+                logger.info(f"✅ [ADAPTER] Используем кэш для {cache_key}")
+                return result
+            else:
+                # Удаляем устаревший кэш
+                del self._cache[cache_key]
+        return None
+    
+    def _set_cached_result(self, cache_key: str, result: str):
+        """Сохраняет результат в кэш"""
+        self._cache[cache_key] = (result, time.time())
+        logger.info(f"💾 [ADAPTER] Сохранили в кэш {cache_key}")
+    
+    def _search_memory_with_timeout(self, query: str, limit: int, timeout: float = 5.0) -> List:
+        """Поиск в памяти с таймаутом"""
+        try:
+            if hasattr(self.memory_manager, 'long_term') and self.memory_manager.long_term:
+                # Используем ThreadPoolExecutor для неблокирующего поиска
+                future = self._executor.submit(
+                    self.memory_manager.long_term.search_memories,
+                    query, limit
+                )
+                return future.result(timeout=timeout)
+            return []
+        except Exception as e:
+            logger.warning(f"⚠️ [ADAPTER] Поиск с таймаутом не удался: {e}")
+            return []
     
     def get_for_prompt(self, user_id: str, query: str) -> Dict[str, str]:
         """
@@ -26,21 +109,30 @@ class MemoryAdapter:
             Словарь с данными для промпта
         """
         try:
-            logger.info(f"🚀 [ADAPTER] СТАРТ get_for_prompt для {user_id}, запрос: {query[:50]}...")
-            print(f"🚀 [ADAPTER] СТАРТ get_for_prompt для {user_id}, запрос: {query[:50]}...")
+            logger.info(f"🚀 [ADAPTER] СТАРТ get_for_prompt для {user_id}, запрос: {query[:self.content_limits['log_preview_length']]}...")
+            print(f"🚀 [ADAPTER] СТАРТ get_for_prompt для {user_id}, запрос: {query[:self.content_limits['log_preview_length']]}...")
             
             # Получаем короткую сводку
             short_summary = self._get_short_memory_summary(user_id)
             
-            # Получаем долгосрочные факты
+            # Получаем долгосрочные факты (с улучшенным поиском)
             long_facts = self._get_long_memory_facts(user_id)
             
             # Получаем семантический контекст
             semantic_context = self._get_semantic_context(user_id, query)
             
+            # НОВОЕ: Специальный поиск имени, если его нет в других результатах
+            name_context = self._ensure_name_in_context(user_id, long_facts, semantic_context)
+            
+            # Объединяем долгосрочные факты с найденным именем
+            if name_context and name_context not in (long_facts or ""):
+                combined_facts = f"{name_context}\n{long_facts}" if long_facts else name_context
+            else:
+                combined_facts = long_facts
+            
             result = {
                 "short_memory_summary": short_summary or "—",
-                "long_memory_facts": long_facts or "—", 
+                "long_memory_facts": combined_facts or "—", 
                 "semantic_context": semantic_context or "—",
             }
             
@@ -92,14 +184,14 @@ class MemoryAdapter:
                             
                             # Форматируем в читаемый вид
                             summary_parts = []
-                            for msg in messages[-10:]:  # Последние 10
+                            for msg in messages[-self.max_short_messages:]:  # Настраиваемое количество сообщений
                                 if isinstance(msg, dict):
                                     role = msg.get('role', 'unknown')
-                                    content = msg.get('content', '')[:100]  # Обрезаем длинные сообщения
+                                    content = msg.get('content', '')[:self.content_limits['short_message_length']]  # Обрезаем длинные сообщения
                                 else:
                                     # Если это объект сообщения
                                     role = getattr(msg, 'role', 'unknown')
-                                    content = getattr(msg, 'content', str(msg))[:100]
+                                    content = getattr(msg, 'content', str(msg))[:self.content_limits['short_message_length']]
                                 
                                 if content:
                                     summary_parts.append(f"[{role.upper()}]: {content}")
@@ -118,7 +210,7 @@ class MemoryAdapter:
                     logger.info(f"🔍 [ADAPTER] HybridMemory.short_memory найден: {type(buffer)}")
                     
                     if hasattr(buffer, 'messages') and buffer.messages:
-                        recent_messages = buffer.messages[-10:]
+                        recent_messages = buffer.messages[-20:]  # Последние 20 сообщений
                         logger.info(f"✅ [ADAPTER] short_memory.messages: {len(recent_messages)} сообщений")
                         
                         # Форматируем в читаемый вид
@@ -126,10 +218,10 @@ class MemoryAdapter:
                         for msg in recent_messages:
                             if isinstance(msg, dict):
                                 role = msg.get('role', 'unknown')
-                                content = msg.get('content', '')[:100]
+                                content = msg.get('content', '')[:self.content_limits['short_message_length']]
                             else:
                                 role = getattr(msg, 'role', 'unknown')
-                                content = getattr(msg, 'content', str(msg))[:100]
+                                content = getattr(msg, 'content', str(msg))[:self.content_limits['short_message_length']]
                             
                             if content:
                                 summary_parts.append(f"[{role.upper()}]: {content}")
@@ -176,21 +268,26 @@ class MemoryAdapter:
             return None
     
     def _get_long_memory_facts(self, user_id: str) -> Optional[str]:
-        """Получает долгосрочные факты о пользователе"""
+        """Получает долгосрочные факты о пользователе с кэшированием и таймаутом"""
         try:
-            logger.info(f"🔍 [ADAPTER] Получаем долгосрочные факты для {user_id}")
             
-            # ИСПРАВЛЕНИЕ: Проверяем разные типы memory_manager
+            cache_key = self._get_cache_key(user_id, "long_facts", "")
+            cached_result = self._get_cached_result(cache_key)
+            if cached_result:
+                return cached_result
+            
+            logger.info(f"🔍 [ADAPTER] Получаем долгосрочные факты для {user_id}")
             
             # Вариант 1: MemoryLevelsManager с long_term
             if hasattr(self.memory_manager, 'long_term') and self.memory_manager.long_term:
                 logger.info(f"🔍 [ADAPTER] long_term найден: {type(self.memory_manager.long_term)}")
                 
                 try:
-                    # Ищем факты о пользователе (более конкретные запросы)
-                    user_facts = self.memory_manager.long_term.search_memories(
-                        query=f"пользователь имя зовут возраст работа семья предпочтения цели",
-                        limit=5
+                    # Оптимизированный поиск с таймаутом
+                    user_facts = self._search_memory_with_timeout(
+                        query=self.search_queries.get('personal_info', 'личная информация пользователь предпочтения интересы'),
+                        limit=self.max_semantic_results * self.facts_search_multiplier,
+                        timeout=3.0  # Ограничиваем время поиска
                     )
                     
                     logger.info(f"🔍 [ADAPTER] Поиск фактов вернул {len(user_facts) if user_facts else 0} результатов")
@@ -199,22 +296,23 @@ class MemoryAdapter:
                         facts_parts = []
                         for fact in user_facts:
                             content = fact.get('content', '')
-                            logger.info(f"🔍 [ADAPTER] Обрабатываем факт: {content[:50]}...")
+                            logger.info(f"🔍 [ADAPTER] Обрабатываем факт: {content[:self.content_limits['log_preview_length']]}...")
                             
-                            # Фильтруем факты, содержащие личную информацию
-                            if content and len(content) > 10:
-                                # Приоритет фактам с именами и личной информацией
-                                important_keywords = ['зовут', 'имя', 'меня', 'лет', 'возраст', 'работа', 'программист', 'андрей', 'глеб', 'пицца', 'еда', 'москве', 'москва', 'живу']
-                                if any(word in content.lower() for word in important_keywords):
-                                    facts_parts.insert(0, f"• {content}")  # В начало списка
-                                    logger.info(f"✅ [ADAPTER] Важный факт добавлен в начало: {content[:30]}...")
-                                else:
-                                    facts_parts.append(f"• {content}")
-                                    logger.info(f"✅ [ADAPTER] Обычный факт добавлен: {content[:30]}...")
+                            # Добавляем все найденные факты - доверяем векторному поиску
+                            if content and len(content) > self.content_limits['min_fact_length']:
+                                facts_parts.append(f"• {content}")
+                                logger.info(f"✅ [ADAPTER] Факт добавлен: {content[:self.content_limits['fact_log_preview_length']]}...")
                         
                         if facts_parts:
-                            result = "\n".join(facts_parts[:5])  # Максимум 5 фактов
+                            # Используем настраиваемое ограничение (если не отключено)
+                            if self.max_facts == -1:
+                                result = "\n".join(facts_parts)  # Без ограничений
+                            else:
+                                result = "\n".join(facts_parts[:self.max_facts])
                             logger.info(f"✅ [ADAPTER] Сформированы долгосрочные факты: {len(facts_parts)} фактов, {len(result)} символов")
+                            
+                            # Кэшируем результат
+                            self._set_cached_result(cache_key, result)
                             return result
                         else:
                             logger.warning(f"⚠️ [ADAPTER] Факты найдены, но все отфильтрованы")
@@ -252,16 +350,16 @@ class MemoryAdapter:
                     
                     # Альтернативно: поиск в памяти
                     if hasattr(long_memory, 'search_memory'):
-                        search_results = long_memory.search_memory("имя зовут возраст", limit=5)
+                        search_results = long_memory.search_memory("личная информация", limit=5)
                         if search_results:
                             facts_parts = []
                             for result in search_results:
                                 content = result.get('content', '')
-                                if content and len(content) > 10:
+                                if content and len(content) > self.content_limits['min_fact_length']:
                                     facts_parts.append(f"• {content}")
                             
                             if facts_parts:
-                                result = "\n".join(facts_parts[:5])
+                                result = "\n".join(facts_parts[:self.max_facts] if self.max_facts != -1 else facts_parts)
                                 logger.info(f"✅ [ADAPTER] Сформированы факты из поиска HybridMemory: {len(result)} символов")
                                 return result
                 except Exception as e:
@@ -296,21 +394,25 @@ class MemoryAdapter:
             return None
     
     def _get_semantic_context(self, user_id: str, query: str) -> Optional[str]:
-        """Получает семантический контекст по запросу"""
+        """Получает семантический контекст по запросу с кэшированием"""
         try:
-            logger.info(f"🔍 [ADAPTER] Получаем семантический контекст для {user_id}, запрос: {query[:50]}...")
-            
-            # ИСПРАВЛЕНИЕ: Проверяем разные типы memory_manager
-            
-            # Вариант 1: MemoryLevelsManager с long_term
+            # Проверяем кэш
+            cache_key = self._get_cache_key(user_id, "semantic", query[:50])
+            cached_result = self._get_cached_result(cache_key)
+            if cached_result:
+                return cached_result
+                
+            logger.info(f"🔍 [ADAPTER] Получаем семантический контекст для {user_id}, запрос: {query[:self.content_limits['log_preview_length']]}...")
+                 
             if hasattr(self.memory_manager, 'long_term') and self.memory_manager.long_term:
                 logger.info(f"🔍 [ADAPTER] long_term найден для семантического поиска")
                 
                 try:
-                    # Ищем релевантные документы по запросу
-                    relevant_docs = self.memory_manager.long_term.search_memories(
+                    # Оптимизированный поиск с таймаутом
+                    relevant_docs = self._search_memory_with_timeout(
                         query=query,
-                        limit=3
+                        limit=self.max_semantic_results,
+                        timeout=2.0  # Еще меньший таймаут для семантического поиска
                     )
                     
                     logger.info(f"🔍 [ADAPTER] Семантический поиск вернул {len(relevant_docs) if relevant_docs else 0} документов")
@@ -319,9 +421,9 @@ class MemoryAdapter:
                         context_parts = []
                         for doc in relevant_docs:
                             content = doc.get('content', '')
-                            logger.info(f"🔍 [ADAPTER] Обрабатываем документ: {content[:50]}...")
+                            logger.info(f"🔍 [ADAPTER] Обрабатываем документ: {content[:self.content_limits['log_preview_length']]}...")
                             
-                            if content and len(content) > 20:  # Фильтруем слишком короткие
+                            if content and len(content) > self.content_limits['min_document_length']:  
                                 context_parts.append(f"📝 {content}")
                                 logger.info(f"✅ [ADAPTER] Документ добавлен в семантический контекст")
                             else:
@@ -330,6 +432,9 @@ class MemoryAdapter:
                         if context_parts:
                             result = "\n".join(context_parts)
                             logger.info(f"✅ [ADAPTER] Сформирован семантический контекст: {len(context_parts)} документов, {len(result)} символов")
+                            
+                            # Кэшируем результат
+                            self._set_cached_result(cache_key, result)
                             return result
                         else:
                             logger.warning(f"⚠️ [ADAPTER] Документы найдены, но все отфильтрованы")
@@ -350,7 +455,7 @@ class MemoryAdapter:
                             context_parts = []
                             for result in search_results:
                                 content = result.get('content', '')
-                                if content and len(content) > 20:
+                                if content and len(content) > self.content_limits['min_document_length']:
                                     context_parts.append(f"📝 {content}")
                             
                             if context_parts:
@@ -361,7 +466,9 @@ class MemoryAdapter:
                     logger.warning(f"⚠️ [ADAPTER] HybridMemory semantic search failed: {e}")
             
             # Вариант 3: Простой поиск по всем доступным методам
-            search_methods = ['search_memory', 'search_memories', 'get_relevant_context']
+            # ИСПРАВЛЕНО: Динамически находим доступные методы поиска
+            search_methods = [method for method in dir(self.memory_manager) 
+                            if 'search' in method.lower() and not method.startswith('_')]
             for method_name in search_methods:
                 if hasattr(self.memory_manager, method_name):
                     try:
@@ -385,7 +492,7 @@ class MemoryAdapter:
                                     else:
                                         content = str(item)
                                     
-                                    if content and len(content) > 20:
+                                    if content and len(content) > self.content_limits['min_document_length']:
                                         context_parts.append(f"📝 {content}")
                                 
                                 if context_parts:
@@ -401,6 +508,18 @@ class MemoryAdapter:
             
         except Exception as e:
             logger.warning(f"❌ [ADAPTER] Ошибка получения семантического контекста: {e}")
+            return None
+    
+    def _ensure_name_in_context(self, user_id: str, long_facts: Optional[str], semantic_context: Optional[str]) -> Optional[str]:
+        """Упрощенный поиск - доверяем векторному поиску без хардкода"""
+        try:
+            # Не делаем специальный поиск имени - векторный поиск должен сам находить релевантные факты
+            # Если векторный поиск не находит имя, значит его нет в памяти или поиск работает неправильно
+            logger.info(f"🔍 [ADAPTER] Доверяем векторному поиску - не делаем специальный поиск имени")
+            return None
+            
+        except Exception as e:
+            logger.warning(f"❌ [ADAPTER] Ошибка в _ensure_name_in_context: {e}")
             return None
     
     def get_question_counter(self, user_id: str) -> int:

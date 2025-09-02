@@ -65,75 +65,29 @@ class BufferMemory(MemoryAdapter):
         key_info = []
         
         # Extract name
-        name_patterns = ["зовут", "меня зовут", "имя"]
-        for pattern in name_patterns:
-            if pattern in text_lower:
-                # Find the word after the pattern
-                words = all_text.split()
-                for i, word in enumerate(words):
-                    if pattern in word.lower() and i + 1 < len(words):
-                        name = words[i + 1].replace(',', '').replace('.', '').replace('!', '')
-                        if len(name) > 2:  # Avoid very short names
-                            key_info.append(f"Имя: {name}")
-                            break
+        # ИСПРАВЛЕНО: Убираем хардкод паттернов имени
+        # Ищем слова с заглавной буквы после местоимений
+        words = all_text.split()
+        for i, word in enumerate(words):
+            if word.lower() in ["я", "меня", "мне"] and i + 1 < len(words):
+                next_word = words[i + 1].replace(',', '').replace('.', '').replace('!', '')
+                if len(next_word) > 2 and next_word[0].isupper() and next_word.isalpha():
+                    key_info.append(f"Имя: {next_word}")
+                    break
         
-        # Extract age
-        age_patterns = ["мне", "лет", "года"]
-        for pattern in age_patterns:
-            if pattern in text_lower:
-                words = all_text.split()
-                for i, word in enumerate(words):
-                    if pattern in word.lower() and i + 1 < len(words):
-                        try:
-                            age = int(words[i + 1])
-                            if 1 <= age <= 120:  # Reasonable age range
-                                key_info.append(f"Возраст: {age} лет")
-                                break
-                        except ValueError:
-                            continue
+        # ИСПРАВЛЕНО: Убираем хардкод возрастных паттернов
+        # Ищем числа с помощью regex
+        import re
+        age_match = re.search(r'\b(\d{1,3})\s*(?:лет|года|год)\b', text_lower)
+        if age_match:
+            age = int(age_match.group(1))
+            if 1 <= age <= 120:
+                key_info.append(f"Возраст: {age} лет")
         
-        # Extract profession
-        profession_keywords = ["работаю", "профессия", "дизайнер", "программист", "врач", "учитель", "инженер"]
-        for keyword in profession_keywords:
-            if keyword in text_lower:
-                key_info.append(f"Профессия: {keyword}")
-                break
+
         
-        # Extract city
-        city_keywords = ["москве", "киеве", "спб", "санкт-петербурге", "львове", "харькове", "одессе"]
-        for keyword in city_keywords:
-            if keyword in text_lower:
-                key_info.append(f"Город: {keyword}")
-                break
-        
-        # Extract hobbies
-        hobby_keywords = ["люблю", "нравится", "увлекаюсь", "хобби", "рисовать", "читать", "путешествовать", "готовить"]
-        hobbies = []
-        
-        # Look for hobby patterns
-        for keyword in hobby_keywords:
-            if keyword in text_lower:
-                # Find words after hobby keywords
-                words = all_text.split()
-                for i, word in enumerate(words):
-                    if keyword in word.lower():
-                        # Look for next few words as potential hobbies
-                        for j in range(1, 4):  # Check next 3 words
-                            if i + j < len(words):
-                                next_word = words[i + j].replace(',', '').replace('.', '').replace('!', '').replace('и', '')
-                                if len(next_word) > 2 and next_word.lower() not in ['я', 'меня', 'мне', 'мое', 'моя', 'моего', 'моей']:
-                                    hobbies.append(next_word)
-        
-        # Also look for specific hobby words
-        specific_hobbies = ["рисовать", "читать", "путешествовать", "готовить", "спорт", "музыка", "фотография"]
-        for hobby in specific_hobbies:
-            if hobby in text_lower:
-                hobbies.append(hobby)
-        
-        # Remove duplicates and limit
-        unique_hobbies = list(set(hobbies))[:3]
-        if unique_hobbies:
-            key_info.append(f"Увлечения: {', '.join(unique_hobbies)}")
+        # ИСПРАВЛЕНО: Убираем все хардкод списки
+        # Векторная база данных сама найдет семантически похожие факты о хобби, профессии, городах
         
         return "; ".join(key_info) if key_info else ""
     

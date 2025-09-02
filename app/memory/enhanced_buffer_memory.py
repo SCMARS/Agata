@@ -632,38 +632,38 @@ class EnhancedBufferMemory(MemoryAdapter):
         key_info = []
         
         # Извлечение имени
-        name_patterns = ["зовут", "меня зовут", "имя"]
-        for pattern in name_patterns:
-            if pattern in text_lower:
-                words = all_text.split()
-                for i, word in enumerate(words):
-                    if pattern in word.lower() and i + 1 < len(words):
-                        name = words[i + 1].replace(',', '').replace('.', '').replace('!', '')
-                        if len(name) > 2:
-                            key_info.append(f"Имя: {name}")
-                            break
+        # ИСПРАВЛЕНО: Убираем хардкод паттернов имени
+        # Ищем слова с заглавной буквы в контексте личных местоимений
+        words = all_text.split()
+        for i, word in enumerate(words):
+            if word.lower() in ["я", "меня", "мне"] and i + 1 < len(words):
+                next_word = words[i + 1].replace(',', '').replace('.', '').replace('!', '')
+                if len(next_word) > 2 and next_word[0].isupper() and next_word.isalpha():
+                    key_info.append(f"Контекст: {word} {next_word}")
+                    break
         
-        # Извлечение возраста
-        age_patterns = ["мне", "лет", "года"]
-        for pattern in age_patterns:
-            if pattern in text_lower:
-                words = all_text.split()
-                for i, word in enumerate(words):
-                    if pattern in word.lower() and i + 1 < len(words):
-                        try:
-                            age = int(words[i + 1])
-                            if 1 <= age <= 120:
-                                key_info.append(f"Возраст: {age} лет")
-                                break
-                        except ValueError:
-                            continue
+        # ИСПРАВЛЕНО: Убираем хардкод возрастных паттернов
+        # Ищем числа в контексте с помощью regex
+        import re
+        age_match = re.search(r'\b(\d{1,3})\s*(?:лет|года|год)\b', text_lower)
+        if age_match:
+            age = int(age_match.group(1))
+            if 1 <= age <= 120:
+                key_info.append(f"Возраст: {age} лет")
         
-        # Извлечение профессии
-        profession_keywords = ["работаю", "профессия", "дизайнер", "программист", "врач", "учитель", "инженер"]
-        for keyword in profession_keywords:
-            if keyword in text_lower:
-                key_info.append(f"Профессия: {keyword}")
-                break
+        # ИСПРАВЛЕНО: Убираем хардкод профессий
+        # Ищем профессию через regex паттерны
+        work_match = re.search(r'работаю\s+(\w+)', text_lower)
+        if work_match:
+            profession = work_match.group(1)
+            if len(profession) > 2:
+                key_info.append(f"Профессия: {profession}")
+        else:
+            # Альтернативный поиск через "я программист" и подобные конструкции
+            profession_match = re.search(r'я\s+(\w+(?:ист|ер|ор|ик))', text_lower)
+            if profession_match:
+                profession = profession_match.group(1)
+                key_info.append(f"Профессия: {profession}")
         
         return "; ".join(key_info) if key_info else ""
     

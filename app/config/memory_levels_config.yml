@@ -12,7 +12,7 @@ short_term:
 long_term:
   enabled: true
   provider: "intelligent_vector"
-  min_importance: 0.3  # Снижен порог для тестирования
+  min_importance: 0.1  
   max_storage_items: 10000
   embedding_model: "text-embedding-3-small"
 
@@ -33,7 +33,7 @@ summary:
 
 # Search Settings
 search_settings:
-  min_importance: 0.3  # Снижен порог для тестирования
+  min_importance: 0.1  # Очень низкий порог для поиска
   max_results: 5
   similarity_threshold: 0.6
   hybrid_search: true

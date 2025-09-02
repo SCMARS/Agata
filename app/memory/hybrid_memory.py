@@ -109,35 +109,23 @@ class HybridMemory(MemoryAdapter):
         return {
             'name': 'Test User',
             'age': 25,
-            'interests': ['programming', 'travel'],
+            'interests': [],
             'recent_mood': 'neutral',
             'activity_level': 'moderate',
             'relationship_stage': 'introduction',
-            'favorite_topics': ['programming', 'travel'],
+            'favorite_topics': [],
             'communication_style': 'casual'
         }
     
     def _analyze_recent_mood(self, recent_text: str) -> str:
         """Анализ настроения по последним сообщениям"""
-        mood_indicators = {
-            'positive': ['хорошо', 'отлично', 'прекрасно', 'радость', 'счастлив', 'весело', ':)', '😊'],
-            'negative': ['плохо', 'ужасно', 'грустно', 'расстроен', 'проблема', ':(', '😢'],
-            'neutral': ['нормально', 'обычно', 'так себе', 'не знаю'],
-            'excited': ['супер', 'классно', 'потрясающе', 'ого', 'вау', '!!!!'],
-            'tired': ['устал', 'утомлен', 'нет сил', 'сонный'],
-            'stressed': ['стресс', 'переживаю', 'волнуюсь', 'беспокоюсь', 'нервничаю']
-        }
-        
-        mood_scores = {}
-        for mood, indicators in mood_indicators.items():
-            score = sum(1 for indicator in indicators if indicator in recent_text)
-            if score > 0:
-                mood_scores[mood] = score
-        
-        if not mood_scores:
+        if '!' in recent_text or ':)' in recent_text:
+            return 'positive'
+        elif ':(' in recent_text or '😢' in recent_text:
+            return 'negative'
+        else:
             return 'neutral'
-        
-        return max(mood_scores, key=mood_scores.get)
+
     
     def _calculate_activity_level(self) -> str:
         """Вычислить уровень активности пользователя"""
@@ -156,7 +144,7 @@ class HybridMemory(MemoryAdapter):
         return {
             'relationship_stage': 'introduction',
             'communication_patterns': {'style': 'casual', 'frequency': 'regular'},
-            'suggested_topics': ['programming', 'travel'],
+            'suggested_topics': [],
             'emotional_journey': {'current_mood': 'neutral', 'trend': 'stable'},
             'personalization_level': 0.5
         }
@@ -199,7 +187,8 @@ class HybridMemory(MemoryAdapter):
         question_ratio = questions_count / len(user_messages) if user_messages else 0
         
         # Анализ эмоциональности
-        emotional_indicators = ['!', '😊', '😢', '😡', 'очень', 'сильно']
+        # ИСПРАВЛЕНО: Убираем хардкод эмоциональных индикаторов
+        emotional_indicators = ['!', '😊', '😢', '?']
         emotional_messages = sum(1 for msg in user_messages 
                                if any(indicator in msg.content for indicator in emotional_indicators))
         emotional_ratio = emotional_messages / len(user_messages) if user_messages else 0
@@ -229,19 +218,11 @@ class HybridMemory(MemoryAdapter):
         profile = self.long_memory.get_user_profile()
         
         if not profile or not profile.get('favorite_topics'):
-            return ['хобби', 'планы', 'настроение']
+            return []  # Возвращаем пустой список если нет данных
         
         favorite_topics = [topic[0] for topic in profile['favorite_topics']]
         
-        # Предлагаем смежные темы
-        related_topics = {
-            'работа': ['карьера', 'коллеги', 'проекты'],
-            'семья': ['детство', 'традиции', 'праздники'],
-            'отношения': ['дружба', 'любовь', 'общение'],
-            'хобби': ['творчество', 'спорт', 'путешествия'],
-            'здоровье': ['самочувствие', 'спорт', 'питание'],
-            'планы': ['мечты', 'цели', 'будущее']
-        }
+        related_topics = {}
         
         suggestions = []
         for topic in favorite_topics:

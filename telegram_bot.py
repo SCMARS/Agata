@@ -607,33 +607,42 @@ class AgathaMemoryBot:
                         'metaTime': "2025-09-02T14:07:00Z"
                     }
                     
+                    logger.info(f"🔄 Отправляем запрос к chat API для пользователя {user_id}")
+                    
                     chat_response = requests.post(
                         f"{self.api_base_url}/api/chat",
                         json=chat_data,
-                        timeout=15  # Уменьшаем timeout
+                        timeout=30  # Увеличиваем timeout для стабильности
                     )
+                    
+                    logger.info(f"📡 Chat API ответил: {chat_response.status_code}")
                     
                     if chat_response.status_code == 200:
                         chat_result = chat_response.json()
                         # API возвращает parts (массив частей ответа)
                         parts = chat_result.get('parts', [])
+                        logger.info(f"🧠 Получены части ответа: {len(parts) if parts else 0}")
+                        
                         if parts:
                             ai_response = ' '.join(parts)
+                            logger.info(f"✅ Отправляем ответ от AI: {ai_response[:50]}...")
                             # Отправляем только ответ от нейросети
                             await update.message.reply_text(ai_response)
+                            return  # Важно! Выходим, чтобы не показывать подтверждение
                         else:
+                            logger.warning("⚠️ Нет частей в ответе от API")
                             # Если нет частей, показываем подтверждение
                             await update.message.reply_text(confirm_text, parse_mode='Markdown')
                         
                     else:
+                        logger.warning(f"❌ Chat API вернул ошибку: {chat_response.status_code} - {chat_response.text}")
                         # Если LLM не работает, показываем подтверждение
                         await update.message.reply_text(confirm_text, parse_mode='Markdown')
-                        logger.warning(f"Ошибка chat API: {chat_response.status_code}")
                         
                 except requests.exceptions.RequestException as e:
+                    logger.error(f"❌ Ошибка подключения к chat API: {e}")
                     # Если LLM не работает, показываем подтверждение  
                     await update.message.reply_text(confirm_text, parse_mode='Markdown')
-                    logger.error(f"Ошибка chat API: {e}")
                 
                 # Обновляем статистику сессии
                 if user_id in self.user_sessions:

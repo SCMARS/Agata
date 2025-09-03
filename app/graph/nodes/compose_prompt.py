@@ -70,34 +70,46 @@ class ComposePromptNode:
             user_id = state.get("user_id", "unknown")
             input_text = state.get("normalized_input", "")
             
-            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Если нет готовых данных памяти, создаем MemoryAdapter
+
             memory_data = state.get("memory", {})
-            if not memory_data or all(v == "—" for v in memory_data.values()):
-                logger.info(f"🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: memory_data пусто, создаем MemoryAdapter")
-                print(f"🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: memory_data пусто, создаем MemoryAdapter")
-                
-                # Получаем менеджер памяти из pipeline
-                if hasattr(state, 'memory_manager') or 'memory_manager' in state:
-                    memory_manager = state.get('memory_manager') or getattr(state, 'memory_manager', None)
-                    if memory_manager:
-                        from ...memory.memory_adapter import MemoryAdapter
-                        adapter = MemoryAdapter(memory_manager)
-                        memory_data = adapter.get_for_prompt(user_id, input_text)
-                        logger.info(f"✅ ИСПРАВЛЕНИЕ: Получили данные от MemoryAdapter")
-                        print(f"✅ ИСПРАВЛЕНИЕ: Получили данные от MemoryAdapter")
-                    else:
-                        logger.warning(f"⚠️ ИСПРАВЛЕНИЕ: memory_manager не найден в state")
-                        print(f"⚠️ ИСПРАВЛЕНИЕ: memory_manager не найден в state")
-                else:
-                    logger.warning(f"⚠️ ИСПРАВЛЕНИЕ: memory_manager не найден")
-                    print(f"⚠️ ИСПРАВЛЕНИЕ: memory_manager не найден")
+            memory_manager = state.get('memory_manager')
             
-            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: извлекаем данные из memory_context
+            if memory_manager:
+                logger.info(f"✅ ИСПРАВЛЕНИЕ: Найден memory_manager, используем его напрямую")
+                print(f"✅ ИСПРАВЛЕНИЕ: Найден memory_manager, используем его напрямую")
+                
+                # memory_manager уже является MemoryAdapter из новой архитектуры
+                self.memory []
+                try:
+                    if hasattr(memory_manager, 'get_for_prompt'):
+                        memory_data = memory_manager.get_for_prompt(user_id, input_text)
+                        logger.info(f"✅ ИСПРАВЛЕНИЕ: Получили данные от MemoryAdapter: short={len(memory_data.get('short_memory_summary', ''))}, facts={len(memory_data.get('long_memory_facts', ''))}")
+                        print(f"✅ ИСПРАВЛЕНИЕ: Получили данные от MemoryAdapter: short={len(memory_data.get('short_memory_summary', ''))}, facts={len(memory_data.get('long_memory_facts', ''))}")
+                    else:
+                        logger.warning(f"⚠️ ИСПРАВЛЕНИЕ: memory_manager не имеет метода get_for_prompt")
+                        print(f"⚠️ ИСПРАВЛЕНИЕ: memory_manager не имеет метода get_for_prompt")
+                        memory_data = {}
+                except Exception as e:
+                    logger.error(f"❌ ИСПРАВЛЕНИЕ: Ошибка получения данных от memory_manager: {e}")
+                    print(f"❌ ИСПРАВЛЕНИЕ: Ошибка получения данных от memory_manager: {e}")
+                    memory_data = {}
+            else:
+                logger.warning(f"⚠️ ИСПРАВЛЕНИЕ: memory_manager не найден в state")
+                print(f"⚠️ ИСПРАВЛЕНИЕ: memory_manager не найден в state")
+                memory_data = {}
+            
+            # ПРОВЕРЯЕМ КАЧЕСТВО ДАННЫХ ОТ MEMORY_ADAPTER
             memory_context = state.get("memory_context", "")
             logger.info(f"🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Обрабатываем memory_context длиной {len(memory_context)} символов")
             
-            # Всегда используем данные из memory_context, если MemoryAdapter не работает
-            if memory_data.get("long_memory_facts") == "—" and memory_context:
+
+            use_memory_context_fallback = (
+                not memory_data or 
+                all(v in ["—", ""] for v in memory_data.values()) or
+                len(memory_data.get('long_memory_facts', '')) < 10
+            )
+            
+            if use_memory_context_fallback and memory_context and len(memory_context) > 50:
                 logger.info(f"🔧 ИСПРАВЛЕНИЕ: MemoryAdapter не работает, извлекаем факты из memory_context")
                 
                 if "Важные факты:" in memory_context:
@@ -180,12 +192,37 @@ class ComposePromptNode:
             # Биография Агаты (можно вынести в отдельный файл)
             agatha_bio = self._get_agatha_bio()
             
+            # ПРИНУДИТЕЛЬНАЯ ЗАМЕНА: Если есть memory_context, используем его
+            final_short_summary = memory_data.get("short_memory_summary", "—")
+            final_long_facts = memory_data.get("long_memory_facts", "—")
+            final_semantic_context = memory_data.get("semantic_context", "—")
+            
+            # ПРОВЕРЯЕМ: нужен ли fallback на memory_context
+            if use_memory_context_fallback and memory_context and len(memory_context) > 20:
+                logger.info(f"🔧 FALLBACK: Используем memory_context для дополнения данных")
+                
+                # Дополняем данные из memory_context только если их нет
+                if len(final_long_facts) < 10:
+                    final_long_facts = f"Информация о пользователе:\n{memory_context[:800]}"
+                final_semantic_context = f"Контекст разговора:\n{memory_context[:600]}"
+                final_short_summary = f"Недавний диалог с пользователем (есть информация о его интересах)"
+                
+                logger.info(f"✅ ПРИНУДИТЕЛЬНО заменили ВСЕ поля памяти на memory_context")
+                logger.info(f"✅ final_long_facts: {len(final_long_facts)} символов")
+                logger.info(f"✅ final_semantic_context: {len(final_semantic_context)} символов")
+            
+            # КРИТИЧЕСКОЕ ЛОГИРОВАНИЕ: Что передается в промпт
+            logger.info(f"🚨 ПЕРЕДАЕТСЯ В ПРОМПТ:")
+            logger.info(f"   short_memory_summary: {final_short_summary[:100]}...")
+            logger.info(f"   long_memory_facts: {final_long_facts[:200]}...")
+            logger.info(f"   semantic_context: {final_semantic_context[:200]}...")
+            
             # Форматируем промпт
             formatted_prompt = self.prompt_template.format_messages(
                 input_text=input_text,
-                short_memory_summary=memory_data.get("short_memory_summary", "—"),
-                long_memory_facts=memory_data.get("long_memory_facts", "—"),
-                semantic_context=memory_data.get("semantic_context", "—"),
+                short_memory_summary=final_short_summary,
+                long_memory_facts=final_long_facts,
+                semantic_context=final_semantic_context,
                 day_instructions=day_instructions,
                 behavior_style=behavior_style,
                 agatha_bio=agatha_bio,
@@ -195,6 +232,11 @@ class ComposePromptNode:
                 last_diff_sec=last_diff_sec,
                 may_ask_question=str(may_ask_question).lower()
             )
+            
+            # Логируем финальный промпт
+            logger.info(f"🚨 ФИНАЛЬНЫЙ ПРОМПТ (первые 500 символов):")
+            prompt_text = str(formatted_prompt[0].content) if formatted_prompt else "ПУСТОЙ"
+            logger.info(f"{prompt_text[:500]}...")
             
             # Создаем новое состояние с обновлениями
             updated_state = {

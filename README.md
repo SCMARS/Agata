@@ -131,7 +131,7 @@ run_migrations()
 ```
 
 ### 4. Запуск проекта
-
+python run_full_system.py
 #### Режим разработки
 
 ```bash

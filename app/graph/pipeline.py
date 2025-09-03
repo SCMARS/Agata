@@ -65,17 +65,34 @@ class AgathaPipeline:
 
     def _get_memory(self, user_id: str):
         if user_id not in self.memories:
-            # ИСПРАВЛЕНИЕ: Используем HybridMemory для совместимости
             try:
-                from ..memory.memory_levels import MemoryLevelsManager
-                self.memories[user_id] = MemoryLevelsManager(user_id)
-                log_info(f"✅ Initialized MemoryLevelsManager for {user_id}")
+                from ..memory.unified_memory import UnifiedMemoryManager
+                from ..memory.memory_adapter import MemoryAdapter
+                
+                # Создаем UnifiedMemoryManager
+                unified_memory = UnifiedMemoryManager(user_id)
+                
+                # Оборачиваем в MemoryAdapter для совместимости
+                memory_adapter = MemoryAdapter(unified_memory)
+                
+                self.memories[user_id] = {
+                    'unified': unified_memory,
+                    'adapter': memory_adapter,
+                    'type': 'unified'
+                }
+                log_info(f"✅ Initialized UnifiedMemoryManager for {user_id}")
             except Exception as e:
-                log_info(f"⚠️ Failed to initialize MemoryLevelsManager: {e}, falling back to HybridMemory")
-                # Fallback к HybridMemory
-                from ..memory.hybrid_memory import HybridMemory
-                self.memories[user_id] = HybridMemory(user_id)
-                log_info(f"✅ Initialized HybridMemory as fallback for {user_id}")
+                log_info(f"⚠️ Failed to initialize UnifiedMemoryManager: {e}, falling back to old system")
+                # Fallback к старой системе
+                try:
+                    from ..memory.memory_levels import MemoryLevelsManager
+                    self.memories[user_id] = MemoryLevelsManager(user_id)
+                    log_info(f"✅ Initialized MemoryLevelsManager as fallback for {user_id}")
+                except Exception as e2:
+                    from ..memory.hybrid_memory import HybridMemory
+                    self.memories[user_id] = HybridMemory(user_id)
+                    log_info(f"✅ Initialized HybridMemory as final fallback for {user_id}")
+        
         return self.memories[user_id]
 
     def _build_graph(self):
@@ -210,26 +227,52 @@ class AgathaPipeline:
 
         memory = self._get_memory(user_id)
         
-        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавляем memory_manager в state для ComposePromptNode
-        state["memory_manager"] = memory
 
-        if state["normalized_input"]:
-            from ..memory.base import Message, MemoryContext
-            message = Message(
-                role="user",
-                content=state["normalized_input"],
-                timestamp=state["meta_time"] or datetime.utcnow()
-            )
-            context = MemoryContext(
-                user_id=user_id,
-                day_number=state["day_number"]
-            )
-            memory.add_message(message, context)
+        if isinstance(memory, dict) and memory.get('type') == 'unified':
+            log_info(" Используем НОВУЮ АРХИТЕКТУРУ (UnifiedMemoryManager)")
+            unified_memory = memory['unified']
+            memory_adapter = memory['adapter']
+            
+            # Добавляем сообщение в унифицированную систему
+            if state["normalized_input"]:
+                result = memory_adapter.add_message_to_unified(
+                    role="user",
+                    content=state["normalized_input"],
+                    metadata={
+                        'timestamp': (state["meta_time"] or datetime.utcnow()).isoformat(),
+                        'day_number': state["day_number"],
+                        'user_id': user_id
+                    },
+                    user_id=user_id
+                )
+                log_info(f"✅ Сообщение добавлено в унифицированную память: {result}")
+            
+            # Передаем memory_adapter для совместимости
+            state["memory_manager"] = memory_adapter
+        else:
+            log_info("⚠️ Используем СТАРУЮ АРХИТЕКТУРУ (fallback)")
+            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавляем memory_manager в state для ComposePromptNode
+            state["memory_manager"] = memory
+
+            if state["normalized_input"]:
+                from ..memory.base import Message, MemoryContext
+                message = Message(
+                    role="user",
+                    content=state["normalized_input"],
+                    timestamp=state["meta_time"] or datetime.utcnow()
+                )
+                context = MemoryContext(
+                    user_id=user_id,
+                    day_number=state["day_number"]
+                )
+                memory.add_message(message, context)
 
         
         try:
-            # Используем MemoryAdapter для подготовки данных памяти
-            memory_adapter = MemoryAdapter(memory)
+            if isinstance(memory, dict) and memory.get('type') == 'unified':
+                memory_adapter = memory['adapter']
+            else:
+                memory_adapter = MemoryAdapter(memory)
             memory_data = memory_adapter.get_for_prompt(
                 user_id=state["user_id"],
                 query=state["normalized_input"]
@@ -390,6 +433,22 @@ class AgathaPipeline:
         print(f"🎯 NODE: _compose_prompt - состояние содержит memory_context: {len(state.get('memory_context', ''))} символов")
         try:
             log_info(f"🔍 DEBUG: Вызываем ComposePromptNode...")
+            
+            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавляем memory_manager в состояние
+            user_id = state.get("user_id", "unknown")
+            if user_id in self.memories:
+                memory_obj = self.memories[user_id]
+                # Если это новая архитектура (словарь), берем adapter
+                if isinstance(memory_obj, dict) and 'adapter' in memory_obj:
+                    state["memory_manager"] = memory_obj['adapter']
+                    log_info(f"✅ Добавили MemoryAdapter в состояние для {user_id}")
+                    print(f"✅ Добавили MemoryAdapter в состояние для {user_id}")
+                else:
+                    # Старая архитектура
+                    state["memory_manager"] = memory_obj
+                    log_info(f"✅ Добавили legacy memory_manager в состояние для {user_id}")
+                    print(f"✅ Добавили legacy memory_manager в состояние для {user_id}")
+            
             # Используем новый ComposePromptNode
             updated_state = self.compose_prompt_node.compose_prompt(state)
             
@@ -671,23 +730,44 @@ class AgathaPipeline:
         user_id = state["user_id"]
         memory = self._get_memory(user_id)
 
-        from ..memory.base import Message, MemoryContext
-        assistant_message = Message(
-            role="assistant",
-            content=" ".join(state["processed_response"]["parts"]),
-            timestamp=datetime.utcnow(),
-            metadata={
-                "strategy": state["current_strategy"],
-                "day_number": state["day_number"],
-                "has_question": state["processed_response"]["has_question"],
-                "processing_time_ms": int((datetime.utcnow() - state["processing_start"]).total_seconds() * 1000)
-            }
-        )
-        context = MemoryContext(
-            user_id=user_id,
-            day_number=state["day_number"]
-        )
-        memory.add_message(assistant_message, context)
+        # НОВАЯ АРХИТЕКТУРА: Проверяем тип памяти для сохранения ответа ИИ
+        if isinstance(memory, dict) and memory.get('type') == 'unified':
+            log_info("🧠 Сохраняем ответ ИИ в НОВУЮ АРХИТЕКТУРУ")
+            memory_adapter = memory['adapter']
+            
+            # Добавляем ответ ИИ в унифицированную систему через adapter
+            result = memory_adapter.add_message_to_unified(
+                role="assistant",
+                content=" ".join(state["processed_response"]["parts"]),
+                metadata={
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'strategy': state["current_strategy"],
+                    'day_number': state["day_number"],
+                    'has_question': state["processed_response"]["has_question"],
+                    'processing_time_ms': int((datetime.utcnow() - state["processing_start"]).total_seconds() * 1000)
+                },
+                user_id=user_id
+            )
+            log_info(f"✅ Ответ ИИ сохранен в унифицированную память: {result}")
+        else:
+            log_info("⚠️ Сохраняем ответ ИИ в СТАРУЮ АРХИТЕКТУРУ")
+            from ..memory.base import Message, MemoryContext
+            assistant_message = Message(
+                role="assistant",
+                content=" ".join(state["processed_response"]["parts"]),
+                timestamp=datetime.utcnow(),
+                metadata={
+                    "strategy": state["current_strategy"],
+                    "day_number": state["day_number"],
+                    "has_question": state["processed_response"]["has_question"],
+                    "processing_time_ms": int((datetime.utcnow() - state["processing_start"]).total_seconds() * 1000)
+                }
+            )
+            context = MemoryContext(
+                user_id=user_id,
+                day_number=state["day_number"]
+            )
+            memory.add_message(assistant_message, context)
         
         log_info(f"✅ Persisted conversation for user {user_id}")
         return state

@@ -64,9 +64,7 @@ class BufferMemory(MemoryAdapter):
         
         key_info = []
         
-        # Extract name
-        # ИСПРАВЛЕНО: Убираем хардкод паттернов имени
-        # Ищем слова с заглавной буквы после местоимений
+
         words = all_text.split()
         for i, word in enumerate(words):
             if word.lower() in ["я", "меня", "мне"] and i + 1 < len(words):

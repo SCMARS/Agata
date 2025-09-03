@@ -402,7 +402,7 @@ class EnhancedBufferMemory(MemoryAdapter):
             response = await self.llm.ainvoke(messages)
             
             summary = response.content.strip()
-            if len(summary) > 50:  # Минимальная длина резюме
+            if len(summary) > 60:  
                 return summary
             
             return None

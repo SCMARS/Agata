@@ -1,7 +1,7 @@
 """
 Memory Adapter - адаптер для подготовки данных памяти для промпта
 """
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from datetime import datetime
 import logging
 import yaml
@@ -9,6 +9,7 @@ import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import time
+from .unified_memory import UnifiedMemoryManager
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,26 @@ class MemoryAdapter:
     
     def __init__(self, memory_manager, config=None):
         self.memory_manager = memory_manager
+        
+        # НОВАЯ АРХИТЕКТУРА: Инициализируем UnifiedMemoryManager
+        # ИСПРАВЛЕНИЕ: Получаем правильный user_id
+        if hasattr(memory_manager, 'user_id'):
+            user_id = memory_manager.user_id
+        else:
+            user_id = getattr(memory_manager, 'user_id', 'default_user')
+        
+        # Сохраняем user_id для использования в get_for_prompt
+        self.current_user_id = user_id
+        
+        try:
+            self.unified_memory = UnifiedMemoryManager(user_id)
+            self.use_unified = True
+            logger.info(f"✅ [ADAPTER] Инициализирован UnifiedMemoryManager для {user_id}")
+            print(f"✅ [ADAPTER] Инициализирован UnifiedMemoryManager для {user_id}")
+        except Exception as e:
+            logger.warning(f"⚠️ [ADAPTER] Ошибка инициализации UnifiedMemoryManager: {e}")
+            self.unified_memory = None
+            self.use_unified = False
         self.logger = logging.getLogger(__name__)
         
         # Загружаем конфигурацию
@@ -37,13 +58,10 @@ class MemoryAdapter:
             'log_preview_length': 50,
             'fact_log_preview_length': 30
         })
-        # Убираем хардкод - доверяем векторному поиску
-        # self.personal_keywords больше не используется
-        
-        # Добавляем кэш и пул потоков для производительности
+
         self._cache = {}
         self._cache_ttl = 60  # 60 секунд кэша
-        self._executor = ThreadPoolExecutor(max_workers=2)  # Ограничиваем количество потоков
+        self._executor = ThreadPoolExecutor(max_workers=2)  
     
     def _load_config(self, config=None):
         """Загружает конфигурацию из файла или переданных параметров"""
@@ -100,6 +118,7 @@ class MemoryAdapter:
     def get_for_prompt(self, user_id: str, query: str) -> Dict[str, str]:
         """
         Получает все данные памяти для промпта
+        НОВАЯ АРХИТЕКТУРА: Использует UnifiedMemoryManager
         
         Args:
             user_id: ID пользователя
@@ -109,32 +128,43 @@ class MemoryAdapter:
             Словарь с данными для промпта
         """
         try:
-            logger.info(f"🚀 [ADAPTER] СТАРТ get_for_prompt для {user_id}, запрос: {query[:self.content_limits['log_preview_length']]}...")
-            print(f"🚀 [ADAPTER] СТАРТ get_for_prompt для {user_id}, запрос: {query[:self.content_limits['log_preview_length']]}...")
+            logger.info(f"🚀 [ADAPTER] СТАРТ get_for_prompt для {user_id}, запрос: {query[:50]}...")
+            print(f"🚀 [ADAPTER] СТАРТ get_for_prompt для {user_id}, запрос: {query[:50]}...")
             
-            # Получаем короткую сводку
-            short_summary = self._get_short_memory_summary(user_id)
-            
-            # Получаем долгосрочные факты (с улучшенным поиском)
-            long_facts = self._get_long_memory_facts(user_id)
-            
-            # Получаем семантический контекст
-            semantic_context = self._get_semantic_context(user_id, query)
-            
-            # НОВОЕ: Специальный поиск имени, если его нет в других результатах
-            name_context = self._ensure_name_in_context(user_id, long_facts, semantic_context)
-            
-            # Объединяем долгосрочные факты с найденным именем
-            if name_context and name_context not in (long_facts or ""):
-                combined_facts = f"{name_context}\n{long_facts}" if long_facts else name_context
+            # НОВАЯ АРХИТЕКТУРА: Используем UnifiedMemoryManager если доступен
+            if self.use_unified and self.unified_memory:
+                logger.info(f"🧠 [ADAPTER] Используем НОВУЮ АРХИТЕКТУРУ (UnifiedMemoryManager) для {user_id}")
+                print(f"🧠 [ADAPTER] Используем НОВУЮ АРХИТЕКТУРУ (UnifiedMemoryManager) для {user_id}")
+                
+                # ИСПРАВЛЕНИЕ: Если user_id не совпадает с текущим, создаем новый UnifiedMemoryManager
+                if self.current_user_id != user_id:
+                    logger.info(f"🔄 [ADAPTER] Смена пользователя: {self.current_user_id} → {user_id}")
+                    print(f"🔄 [ADAPTER] Смена пользователя: {self.current_user_id} → {user_id}")
+                    try:
+                        self.unified_memory = UnifiedMemoryManager(user_id)
+                        self.current_user_id = user_id
+                        logger.info(f"✅ [ADAPTER] Создан новый UnifiedMemoryManager для {user_id}")
+                        print(f"✅ [ADAPTER] Создан новый UnifiedMemoryManager для {user_id}")
+                    except Exception as e:
+                        logger.error(f"❌ [ADAPTER] Ошибка создания UnifiedMemoryManager для {user_id}: {e}")
+                        print(f"❌ [ADAPTER] Ошибка создания UnifiedMemoryManager для {user_id}: {e}")
+                        return self._get_legacy_context(user_id, query)
+                
+                # Получаем контекст из унифицированной системы
+                unified_context = self.unified_memory.get_context_for_prompt(query)
+                
+                # Логируем статистику памяти
+                stats = self.unified_memory.get_memory_stats()
+                logger.info(f"📊 [ADAPTER] Статистика памяти: {stats}")
+                print(f"📊 [ADAPTER] Статистика памяти: {stats}")
+                
+                result = unified_context
             else:
-                combined_facts = long_facts
-            
-            result = {
-                "short_memory_summary": short_summary or "—",
-                "long_memory_facts": combined_facts or "—", 
-                "semantic_context": semantic_context or "—",
-            }
+                logger.info(f"⚠️ [ADAPTER] Используем СТАРУЮ АРХИТЕКТУРУ (fallback)")
+                print(f"⚠️ [ADAPTER] Используем СТАРУЮ АРХИТЕКТУРУ (fallback)")
+                
+                # Fallback к старой системе
+                result = self._get_legacy_context(user_id, query)
             
             logger.info(f"✅ [ADAPTER] РЕЗУЛЬТАТ get_for_prompt: short={len(result['short_memory_summary'])}, facts={len(result['long_memory_facts'])}, semantic={len(result['semantic_context'])}")
             print(f"✅ [ADAPTER] РЕЗУЛЬТАТ get_for_prompt: short={len(result['short_memory_summary'])}, facts={len(result['long_memory_facts'])}, semantic={len(result['semantic_context'])}")
@@ -147,11 +177,121 @@ class MemoryAdapter:
             import traceback
             logger.error(f"❌ [ADAPTER] Traceback: {traceback.format_exc()}")
             print(f"❌ [ADAPTER] Traceback: {traceback.format_exc()}")
+            
+            # Возвращаем пустые данные в случае ошибки
             return {
                 "short_memory_summary": "—",
                 "long_memory_facts": "—",
-                "semantic_context": "—",
+                "semantic_context": "—"
             }
+    
+    def add_message_to_unified(self, role: str, content: str, metadata: Dict[str, Any] = None, user_id: str = None) -> Dict[str, bool]:
+        """
+        Добавляет сообщение в унифицированную систему памяти
+        НОВАЯ АРХИТЕКТУРА
+        """
+        if self.use_unified and self.unified_memory:
+            # ИСПРАВЛЕНИЕ: Проверяем соответствие user_id
+            if user_id and self.current_user_id != user_id:
+                logger.info(f"🔄 [ADAPTER] Смена пользователя в add_message: {self.current_user_id} → {user_id}")
+                try:
+                    self.unified_memory = UnifiedMemoryManager(user_id)
+                    self.current_user_id = user_id
+                    logger.info(f"✅ [ADAPTER] Создан новый UnifiedMemoryManager для {user_id}")
+                except Exception as e:
+                    logger.error(f"❌ [ADAPTER] Ошибка создания UnifiedMemoryManager для {user_id}: {e}")
+                    return {'short_term': False, 'long_term': False}
+            
+            try:
+                result = self.unified_memory.add_message(role, content, metadata)
+                logger.info(f"✅ [ADAPTER] Сообщение добавлено в унифицированную память: {result}")
+                return result
+            except Exception as e:
+                logger.error(f"❌ [ADAPTER] Ошибка добавления в унифицированную память: {e}")
+                return {'short_term': False, 'long_term': False}
+        else:
+            logger.warning(f"⚠️ [ADAPTER] UnifiedMemoryManager недоступен, используем старую систему")
+            return {'short_term': False, 'long_term': False}
+    
+    def _get_legacy_context(self, user_id: str, query: str) -> Dict[str, str]:
+        """Старая архитектура - fallback"""
+        # Получаем короткую сводку
+        short_summary = self._get_short_memory_summary(user_id)
+        
+        # Получаем долгосрочные факты (с улучшенным поиском)
+        long_facts = self._get_long_memory_facts(user_id)
+        
+        # Получаем семантический контекст
+        semantic_context = self._get_semantic_context(user_id, query)
+        
+        # НОВОЕ: Специальный поиск имени, если его нет в других результатах
+        name_context = self._ensure_name_in_context(user_id, long_facts, semantic_context)
+        
+        # Объединяем долгосрочные факты с найденным именем
+        if name_context and name_context not in (long_facts or ""):
+            combined_facts = f"{name_context}\n{long_facts}" if long_facts else name_context
+        else:
+            combined_facts = long_facts
+        
+        result = {
+            "short_memory_summary": short_summary or "—",
+            "long_memory_facts": combined_facts or "—", 
+            "semantic_context": semantic_context or "—",
+        }
+        
+        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ВСЕГДА принудительно ищем актуальные факты
+        logger.info(f"🔍 [ADAPTER] ПРОВЕРЯЕМ long_memory_facts: '{result['long_memory_facts'][:50]}...'")
+        if result["long_memory_facts"] == "—" or len(result["long_memory_facts"]) < 50:
+                try:
+                    logger.info(f"🚨 [ADAPTER] ПРИНУДИТЕЛЬНОЕ ИСПРАВЛЕНИЕ: Ищем актуальные факты пользователя")
+                    # Принудительный поиск актуальных фактов
+                    if hasattr(self.memory_manager, 'long_term') and self.memory_manager.long_term:
+                        # Используем текущий запрос для поиска релевантных фактов
+                        current_query = query if query and len(query) > 5 else "информация о пользователе"
+                        
+                        search_results = self.memory_manager.long_term.search(current_query, similarity_threshold=0.0, max_results=15)
+                        
+                        if search_results:
+                            forced_facts = []
+                            logger.info(f"🔍 [ADAPTER] Обрабатываем {len(search_results)} результатов поиска")
+                            
+                            for i, search_result in enumerate(search_results[:10]):
+                                content = search_result.get('content', '') or search_result.get('document', '')
+                                score = search_result.get('relevance_score', 0)
+                                
+                                logger.info(f"🔍 [ADAPTER] Результат {i+1}: score={score:.3f}, content='{content[:80]}...'")
+                                
+                                # Берем ВСЕ результаты с хорошим score
+                                if content and len(content) > 10 and score > 0.1:
+                                    # Фильтруем только очевидные ответы ИИ
+                                    if not (content.startswith("Добрый день") or content.startswith("Добрый вечер") or "😊" in content):
+                                        forced_facts.append(f"• {content}")
+                                        logger.info(f"✅ [ADAPTER] Добавлен факт: {content[:60]}...")
+                                    else:
+                                        logger.info(f"🚫 [ADAPTER] Отфильтрован ответ ИИ: {content[:60]}...")
+                                else:
+                                    logger.info(f"❌ [ADAPTER] Пропущен (score={score:.3f}): {content[:60]}...")
+                            
+                            # Убираем дубликаты
+                            forced_facts = list(set(forced_facts))
+                            
+                            if forced_facts:
+                                result["long_memory_facts"] = "ВАЖНАЯ ИНФОРМАЦИЯ О ПОЛЬЗОВАТЕЛЕ:\n" + "\n".join(forced_facts[:10])
+                                logger.info(f"🚨 ПРИНУДИТЕЛЬНО создали {len(forced_facts)} фактов")
+                                print(f"🚨 ПРИНУДИТЕЛЬНО создали {len(forced_facts)} фактов")
+                                
+                                # Логируем что именно передается
+                                logger.info(f"🔥 [ADAPTER] ПЕРЕДАЕМ В ПРОМПТ: {result['long_memory_facts'][:200]}...")
+                                print(f"🔥 [ADAPTER] ПЕРЕДАЕМ В ПРОМПТ: {result['long_memory_facts'][:200]}...")
+                            else:
+                                logger.warning(f"⚠️ Не найдено подходящих фактов после фильтрации")
+                        else:
+                            logger.warning(f"⚠️ Поиск в векторной БД не вернул результатов")
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка принудительного поиска: {e}")
+        
+        return result
+            
     
     def _get_short_memory_summary(self, user_id: str) -> Optional[str]:
         """Получает короткую сводку последних сообщений"""
@@ -350,7 +490,7 @@ class MemoryAdapter:
                     
                     # Альтернативно: поиск в памяти
                     if hasattr(long_memory, 'search_memory'):
-                        search_results = long_memory.search_memory("личная информация", limit=5)
+                        search_results = long_memory.search_memory("личная информация", max_results=100)
                         if search_results:
                             facts_parts = []
                             for result in search_results:
@@ -450,7 +590,7 @@ class MemoryAdapter:
                     logger.info(f"🔍 [ADAPTER] HybridMemory.long_memory найден для семантического поиска")
                     
                     if hasattr(long_memory, 'search_memory'):
-                        search_results = long_memory.search_memory(query, limit=3)
+                        search_results = long_memory.search_memory(query, max_results=3)
                         if search_results:
                             context_parts = []
                             for result in search_results:

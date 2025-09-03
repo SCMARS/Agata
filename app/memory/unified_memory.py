@@ -148,8 +148,8 @@ class UnifiedMemoryManager:
             except Exception as e:
                 logger.error(f"❌ [UNIFIED-{self.user_id}] Ошибка поиска в векторной БД: {e}")
         
-        # 3. ДОПОЛНИТЕЛЬНО: Если в краткосрочной памяти есть факты, добавляем их тоже
-        if len(context["long_memory_facts"]) <= 5 and self.short_term_window:  # Если долгосрочных фактов мало
+ 
+        if self.short_term_window:
             user_messages = [msg for msg in self.short_term_window if msg['role'] == 'user']
             if user_messages:
                 recent_facts = []
@@ -161,11 +161,12 @@ class UnifiedMemoryManager:
                             recent_facts.append(f"• {content}")
                 
                 if recent_facts:
-                    if context["long_memory_facts"] == "—":
-                        context["long_memory_facts"] = "Факты из недавних сообщений:\n" + "\n".join(recent_facts)
-                    else:
-                        context["long_memory_facts"] += "\n\nИз недавних сообщений:\n" + "\n".join(recent_facts)
-                    logger.info(f"✅ [UNIFIED-{self.user_id}] Добавлены факты из краткосрочной памяти: {len(recent_facts)}")
+                    # КРИТИЧЕСКИ ВАЖНО: Краткосрочная память ПЕРЕЗАПИСЫВАЕТ старые факты
+                    context["long_memory_facts"] = "Факты из недавних сообщений:\n" + "\n".join(recent_facts)
+                    # Также обновляем семантический контекст
+                    context["semantic_context"] = "Важные факты:\n" + "\n".join(recent_facts[:3])
+                    logger.info(f"🔥 [UNIFIED-{self.user_id}] ПЕРЕЗАПИСАЛИ факты краткосрочной памятью: {len(recent_facts)}")
+                    logger.info(f"🔥 [UNIFIED-{self.user_id}] Краткосрочная память имеет ПРИОРИТЕТ над векторной БД")
         
         # 4. Логируем что возвращаем
         logger.info(f"📊 [UNIFIED-{self.user_id}] ВОЗВРАЩАЕМ:")

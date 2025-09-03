@@ -13,6 +13,8 @@ from ..utils.time_utils import TimeUtils
 from ..utils.message_controller import MessageController
 from ..utils.behavioral_analyzer import BehavioralAnalyzer
 from ..utils.prompt_composer import PromptComposer
+from ..utils.message_splitter import message_splitter
+from ..utils.question_controller import question_controller
 from ..memory.memory_adapter import MemoryAdapter
 from ..graph.nodes.compose_prompt import ComposePromptNode
 
@@ -719,8 +721,11 @@ class AgathaPipeline:
             context['recent_mood']
         )
 
-        # Используем MessageController для обработки
-        processed = message_controller.process_message(enhanced_response, context)
+        # Используем новый MessageSplitter для разбиения сообщений
+        processed = message_splitter.split_message(enhanced_response)
+        
+        # Обновляем счетчик вопросов
+        question_controller.increment_counter(user_id)
         
         state["processed_response"] = processed
         
@@ -772,35 +777,12 @@ class AgathaPipeline:
         log_info(f"✅ Persisted conversation for user {user_id}")
         return state
     
-    def _split_response(self, text: str) -> List[str]:
-        """Split response into 1-3 logical parts"""
-        if len(text) <= settings.MAX_MESSAGE_LENGTH:
-            return [text]
-        
-        # Try to split by sentences
-        sentences = re.split(r'[.!?]+', text)
-        sentences = [s.strip() for s in sentences if s.strip()]
-        
-        if len(sentences) <= 3:
-            return sentences
-        
-        # Group sentences into 2-3 parts
-        if len(sentences) <= 6:
-            mid = len(sentences) // 2
-            return [
-                ". ".join(sentences[:mid]) + ".",
-                ". ".join(sentences[mid:]) + "."
-            ]
-        else:
-            third = len(sentences) // 3
-            return [
-                ". ".join(sentences[:third]) + ".",
-                ". ".join(sentences[third:2*third]) + ".",
-                ". ".join(sentences[2*third:]) + "."
-            ]
+    def _split_response(self, text: str) -> Dict[str, Any]:
+        """Split response into 1-3 logical parts using new message_splitter"""
+        return message_splitter.split_message(text)
     
     def _calculate_delays(self, parts: List[str]) -> List[int]:
-        """Calculate typing delays between parts"""
+        """Calculate typing delays between parts - DEPRECATED, use message_splitter"""
         delays = [0]  # First part has no delay
         
         for i in range(1, len(parts)):

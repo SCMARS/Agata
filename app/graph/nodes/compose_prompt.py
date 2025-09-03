@@ -1,17 +1,18 @@
-"""
-Compose Prompt Node - узел для составления промпта с использованием системного шаблона
-"""
+
 from langchain_core.prompts import ChatPromptTemplate
 from typing import Dict, Any
 import logging
 import os
+from datetime import datetime
+from ...utils.agata_prompt_loader import agata_loader
+from ...utils.daily_behavior import daily_behavior
+from ...utils.message_splitter import message_splitter
+from ...utils.question_controller import question_controller
 
 logger = logging.getLogger(__name__)
 
 
-class ComposePromptNode:
-    """Узел для составления промпта с использованием системного шаблона"""
-    
+class ComposePromptNode:   
     def __init__(self):
         self.system_prompt = self._load_system_prompt()
         self.prompt_template = self._create_prompt_template()
@@ -23,9 +24,11 @@ class ComposePromptNode:
             if os.path.exists(prompt_path):
                 with open(prompt_path, "r", encoding="utf-8") as f:
                     return f.read().strip()
-            else:
-                logger.warning(f"Файл системного промпта не найден: {prompt_path}")
-                return self._get_fallback_prompt()
+            
+            # Если нет, создаем системный промпт из новых компонентов
+            logger.info("Создаем системный промпт из agata_prompt_data")
+            return agata_loader.create_system_prompt(stage_number=1, day_number=1)
+            
         except Exception as e:
             logger.error(f"Ошибка загрузки системного промпта: {e}")
             return self._get_fallback_prompt()
@@ -37,7 +40,15 @@ class ComposePromptNode:
 Отвечай естественно и дружелюбно."""
     
     def _create_prompt_template(self) -> ChatPromptTemplate:
-        """Создает шаблон промпта"""
+        """Создает шаблон промпта с полным набором переменных"""
+        
+        # Добавляем все переменные, которые используются в системном промпте
+        template_vars = [
+            "input_text", "short_memory_summary", "long_memory_facts", "semantic_context",
+            "day_instructions", "behavior_style", "agatha_bio", "tone_style", "now_iso",
+            "day_number", "last_diff_sec", "may_ask_question", "time_greeting", "absence_comment"
+        ]
+        
         return ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
             ("user", "{input_text}")
@@ -79,7 +90,6 @@ class ComposePromptNode:
                 print(f"✅ ИСПРАВЛЕНИЕ: Найден memory_manager, используем его напрямую")
                 
                 # memory_manager уже является MemoryAdapter из новой архитектуры
-                self.memory []
                 try:
                     if hasattr(memory_manager, 'get_for_prompt'):
                         memory_data = memory_manager.get_for_prompt(user_id, input_text)
@@ -185,12 +195,20 @@ class ComposePromptNode:
             else:
                 last_diff_sec = 0
             
-            # Счетчик вопросов
+            # Контроль вопросов с помощью нового контроллера
             question_counter = state.get("question_count", 0)
-            may_ask_question = (question_counter % 3 == 2)
+            should_avoid_questions = question_controller.should_avoid_question(user_id)
+            may_ask_question = not should_avoid_questions
             
-            # Биография Агаты (можно вынести в отдельный файл)
-            agatha_bio = self._get_agatha_bio()
+            logger.info(f"🎯 [QUESTIONS] Пользователь {user_id}: счетчик={question_counter}, избегать={should_avoid_questions}, можно_спросить={may_ask_question}")
+            print(f"🎯 [QUESTIONS] Пользователь {user_id}: счетчик={question_counter}, избегать={should_avoid_questions}, можно_спросить={may_ask_question}")
+            
+            # Временной контекст
+            time_greeting = daily_behavior.get_time_greeting(state.get("meta_time", datetime.now())) if state.get("meta_time") else ""
+            absence_comment = daily_behavior.get_absence_comment(last_diff_sec // 86400) if last_diff_sec > 86400 else ""
+            
+            # Биография Агаты с дневным поведением
+            agatha_bio = self._get_agatha_bio(day_number)
             
             # ПРИНУДИТЕЛЬНАЯ ЗАМЕНА: Если есть memory_context, используем его
             final_short_summary = memory_data.get("short_memory_summary", "—")
@@ -217,7 +235,7 @@ class ComposePromptNode:
             logger.info(f"   long_memory_facts: {final_long_facts[:200]}...")
             logger.info(f"   semantic_context: {final_semantic_context[:200]}...")
             
-            # Форматируем промпт
+
             formatted_prompt = self.prompt_template.format_messages(
                 input_text=input_text,
                 short_memory_summary=final_short_summary,
@@ -230,7 +248,9 @@ class ComposePromptNode:
                 now_iso=now_iso,
                 day_number=day_number,
                 last_diff_sec=last_diff_sec,
-                may_ask_question=str(may_ask_question).lower()
+                may_ask_question=str(may_ask_question).lower(),
+                time_greeting=time_greeting,
+                absence_comment=absence_comment
             )
             
             # Логируем финальный промпт
@@ -248,11 +268,13 @@ class ComposePromptNode:
             
             # 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРИНУДИТЕЛЬНО ИЗВЛЕКАЕМ ДАННЫЕ ИЗ memory_context
             memory_context = state.get("memory_context", "")
-            if memory_context and ("глеб" in memory_context.lower() or "меня зовут" in memory_context.lower()):
+            if memory_context and "меня зовут" in memory_context.lower():
                 logger.info(f"🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Найден memory_context с именем пользователя")
                 
-                # Извлекаем имя
-                user_name = "Глеб" if "глеб" in memory_context.lower() else "пользователь"
+                # Простое извлечение имени из контекста
+                import re
+                name_match = re.search(r'меня зовут\s+(\w+)', memory_context.lower())
+                user_name = name_match.group(1).capitalize() if name_match else "пользователь"
                 
                 # ПРИНУДИТЕЛЬНО ЗАМЕНЯЕМ ДАННЫЕ В ПРОМПТЕ
                 if "short): —" in updated_state.get("final_prompt", ""):
@@ -295,23 +317,17 @@ class ComposePromptNode:
                 "system_prompt_used": False
             }
     
-    def _get_agatha_bio(self) -> str:
-        """Возвращает биографию Агаты из конфигурации"""
+    def _get_agatha_bio(self, day_number: int = 1) -> str:
+        """Возвращает полную биографию Агаты с дневным промптом"""
         try:
-            # Пытаемся загрузить из файла конфигурации
-            bio_path = "config/agatha_bio.txt"
-            if os.path.exists(bio_path):
-                with open(bio_path, "r", encoding="utf-8") as f:
-                    return f.read().strip()
+            # Используем новый загрузчик промптов
+            bio = agata_loader.load_persona_bio()
+            day_prompt = daily_behavior.get_day_prompt(day_number)
             
-            # Fallback биография
-            return """Агата Кузьменко, 27 лет, родилась в Киеве, живет в Варшаве с 2018 года.
-Маркетолог, работаю в Move Closer, занимаюсь трейдингом. 
-Хобби: спорт (бассейн, спортзал), кулинария, путешествия.
-Мечтаю о Tesla, планирую свое агентство."""
+            return f"{bio}\n\nПОВЕДЕНИЕ НА СЕГОДНЯ:\n{day_prompt}"
         except Exception as e:
             logger.warning(f"Ошибка загрузки биографии: {e}")
-            return "Агата - дружелюбный AI-помощник."
+            return agata_loader._get_fallback_bio()
     
     def get_prompt_info(self) -> Dict[str, Any]:
         """Возвращает информацию о промпте для диагностики"""
